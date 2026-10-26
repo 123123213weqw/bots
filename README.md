@@ -133,21 +133,56 @@ src/
   config.ts    .env 读取
 tests/         node:test，28 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
-deploy/        macOS launchd 常驻（node）
+deploy/        systemd unit + deploy.sh + macOS launchd
 assets/        示例图片
 ```
 
 ## 开发
 
 ```bash
-npm test          # node --test，28 个用例，不需要网络和凭据
+npm test          # node --test，28 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```
 
 测试覆盖的是容易写错的地方：重推 5 次只回 1 条、TTL/容量边界、代理对不被切断、上传只发生一次、错误码转成异常、handler 抛异常不影响后续消息。
 
-## 常驻
+## 部署
+
+**能跑在任何能出网的地方** —— 长连接是主动向外建 WebSocket，所以不需要公网 IP、端口映射、域名或证书。装在 GPU 服务器、内网机器、笔记本上都一样。
+
+Node 版本决定跑法：
+
+| Node | 跑法 |
+| --- | --- |
+| >= 23.6 | `node src/index.ts` 直接跑 TS |
+| 22.6 - 23.5 | `node --experimental-strip-types src/index.ts` |
+| 20 - 22.5 | `npm run build && node dist/index.js`（生产建议一律用这条） |
+
+`npm test` 直接跑 `.ts`，需要 Node >= 22.6；Node 20 上请只跑编译产物。
+
+### Linux / systemd（推荐）
+
+```bash
+./deploy/deploy.sh user@host        # 同步 + 装依赖 + 编译 + 装 unit + 重启
+```
+
+前提：目标机已执行 `loginctl enable-linger <user>`，否则登出后用户级服务会被回收。
+
+手工等价步骤：
+
+```bash
+rsync -az --exclude node_modules --exclude .env ./ user@host:~/bots/
+ssh user@host 'cd ~/bots && npm ci && npx tsc -p tsconfig.json'
+scp .env user@host:~/bots/.env && ssh user@host 'chmod 600 ~/bots/.env'
+ssh user@host 'mkdir -p ~/.config/systemd/user && \
+  cp ~/bots/deploy/bot.service ~/.config/systemd/user/feishu-bot.service && \
+  systemctl --user daemon-reload && systemctl --user enable --now feishu-bot.service'
+```
+
+日志：`journalctl --user -u feishu-bot -f`
+
+### macOS / launchd
 
 ```bash
 # 编辑 deploy/bot.plist 里的两处 REPLACE_ME
@@ -155,9 +190,12 @@ cp deploy/bot.plist ~/Library/LaunchAgents/com.example.bots.plist
 launchctl load -w ~/Library/LaunchAgents/com.example.bots.plist
 ```
 
-Linux 用 systemd，同理。
+### 只能有一个实例
+
+长连接是**集群模式**推送：同一应用有多个客户端时，每条事件随机投给其中一个。两个实例不会分担负载，只会各收到一半，而且两边日志都显示"连接正常"，极难排查。换机器时先停旧的再起新的。
 
 ## 安全
+
 
 - `.env`（mode 600）保存凭据，已在 `.gitignore` 里；**不要**提交。
 - `console/read_secret.py` 直接写文件而不打印，避免密钥进 shell history / 聊天记录。

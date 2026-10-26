@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Deploy to a Linux box over SSH, from a machine that already has the repo.
+#
+#   ./deploy/deploy.sh user@host            # first time and upgrades
+#   ./deploy/deploy.sh user@host --no-enable
+#
+# Assumes: node >= 20 on the target, systemd with a lingering user session
+# (`loginctl enable-linger <user>`) so the service survives logout.
+#
+# Two things this script is careful about:
+#   * .env is sent separately and chmod 600, never printed, never in git.
+#   * it refuses nothing about other instances, but STOP ANY OTHER RUNNING
+#     INSTANCE FIRST: long connections are clustered, not broadcast, so two
+#     clients of the same app split events at random and both look healthy.
+set -euo pipefail
+
+TARGET="${1:?usage: deploy.sh user@host [--no-enable]}"
+ENABLE=1
+[[ "${2:-}" == "--no-enable" ]] && ENABLE=0
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE=feishu-bot
+
+cd "$HERE"
+
+echo "==> syncing source to $TARGET:~/bots"
+rsync -az --delete \
+  --exclude node_modules --exclude .env --exclude .state \
+  --exclude dist --exclude .git --exclude __pycache__ --exclude .venv \
+  ./ "$TARGET:~/bots/"
+
+if [[ -f .env ]]; then
+  echo "==> sending .env (mode 600)"
+  rsync -az .env "$TARGET:~/bots/.env"
+  ssh "$TARGET" "chmod 600 ~/bots/.env"
+else
+  echo "!! no local .env — the service will fail until one exists on the target"
+fi
+
+echo "==> installing dependencies and building on the target"
+ssh "$TARGET" "cd ~/bots && npm ci --no-audit --no-fund >/dev/null && npx tsc -p tsconfig.json && echo built: \$(ls dist | tr '\n' ' ')"
+
+echo "==> installing systemd user unit"
+ssh "$TARGET" "mkdir -p ~/.config/systemd/user \
+  && cp ~/bots/deploy/bot.service ~/.config/systemd/user/$SERVICE.service \
+  && systemctl --user daemon-reload"
+
+if [[ $ENABLE == 1 ]]; then
+  ssh "$TARGET" "systemctl --user enable $SERVICE.service"
+fi
+
+echo "==> restarting"
+ssh "$TARGET" "systemctl --user restart $SERVICE.service && sleep 6 \
+  && systemctl --user is-active $SERVICE.service \
+  && journalctl --user -u $SERVICE.service --since '-15s' --no-pager | grep -E 'connection ready|fatal' || true"
+
+echo "==> done. logs: journalctl --user -u $SERVICE -f"
