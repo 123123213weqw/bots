@@ -1,0 +1,22 @@
+[Unit]
+Description=Daily AI-inference repo digest to Feishu
+Documentation=https://github.com/123123213weqw/bots
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bots
+ExecStart=%h/bots/.node dist/digest.js
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Shanghai
+
+# Only needs to append to its own seen-list.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/bots/.state
+
+# A digest that fails should not retry all morning; the timer tries tomorrow.
+TimeoutStartSec=180

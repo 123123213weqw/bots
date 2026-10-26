@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the AI-inference digest every morning
+Documentation=https://github.com/123123213weqw/bots
+
+[Timer]
+# 09:00 in the system timezone. The host is CST (UTC+8); NODE/TZ is pinned in
+# the service so the date in the message is the same day the reader sees.
+OnCalendar=*-*-* 09:00:00
+# If the machine was off at 09:00, run once when it comes back rather than
+# skipping the day entirely.
+Persistent=true
+RandomDelaySec=300
+Unit=digest.service
+
+[Install]
+WantedBy=timers.target

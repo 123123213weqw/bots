@@ -136,6 +136,54 @@ cd ~/bots && ./deploy/set-key.sh     # 粘贴新 key 后 Ctrl-D
 
 想彻底解耦，只有在 DeepSeek 控制台给 bot 单独签一个 key（同账号可有多个，额度共用、吊销互不影响），然后用上面的 `set-key.sh` 换上。
 
+## 每日 AI Infra 日报
+
+每天推一条「GitHub 上 AI 推理基础设施」的推荐到飞书群。
+
+```bash
+npm run digest                 # 推送到 DIGEST_CHAT_ID
+npm run digest -- --dry-run    # 只打印，不发
+npm run digest -- --reset-seen # 清空已推荐记录（测试用）
+```
+
+为什么它不是那种"LLM 凭记忆列项目"的日报：
+
+| 做法 | 结果 |
+|---|---|
+| 数据 | 全部现查 GitHub Search API，元数据永远是真的 |
+| 描述 | **直接引用仓库自己的 description，不改写**——所以不会出现编造的项目 |
+| 排序 | 新项目按 star/天，生态按 star + 近期提交，都是可复算的指标 |
+| 去重 | `.state/digest-seen.json` 记住已推的，`seen` 满 400 条滚动淘汰 |
+
+过滤做了两层，都是踩出来的：**topic 搜索很脏**（`gitleaks` 这种密钥扫描器被标了 `topic:llm-inference`），所以相关性只看 description 里的强信号词（`inference` / `serving` / `kv-cache` / `paged-attention` / `triton` / `quantiz` …）。**裸的 `llm` 这个词不能用**——它让微调工具 LlamaFactory 混进了"推理服务"栏目。
+
+输出示例（真实数据）：
+
+```
+AI Infra / 推理 日报 · 10/26
+
+新项目（近半年创建，按 star 增速）
+1. deepseek-ai/DeepInfer
+   DeepInfer: High-performance, large-scale inference framework for DeepSeek models
+   22.9k★ · Python · Apache-2.0 · +2219.0★/天
+   https://github.com/deepseek-ai/DeepInfer
+...
+数据来自 GitHub Search API，描述为仓库原文，未做改写。
+```
+
+`license 不明确` 会显式标出（GitHub 的 `NOASSERTION` 和没有 license 都算）——真要部署一个东西时，这是能用的事实。
+
+配置：
+
+```
+DIGEST_CHAT_ID=oc_xxxxxxxxxxxx        # 推送到哪个群
+GITHUB_TOKEN=ghp_xxx                  # 可选：未认证搜索限 10 次/分钟
+```
+
+不配 `GITHUB_TOKEN` 也能跑（每天 8 个查询，够用），但会偶发 403——代码会按 `Retry-After` 退避重试，单条查询失败也不会让整条日报变空。
+
+定时：`deploy/digest.timer` 每天 09:00（`Persistent=true`，关机错过会在开机后补跑一次）。
+
 ## 三个必须知道的约束
 
 | 约束 | 后果 | 本仓库怎么处理 |
@@ -197,19 +245,20 @@ src/
   llm.ts       DeepSeek 客户端（含 redact，保证 key 不外泄）
   handler.ts   业务逻辑：命令 + 模型调用 + 上下文（可注入假模型测试）
   history.ts   每会话短上下文，有上限
+  digest.ts    每日 AI Infra 日报（GitHub API → 飞书群）
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，50 个用例，全部离线
+tests/         node:test，65 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
-deploy/        systemd unit + deploy.sh + set-key.sh + macOS launchd
+deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
 ```
 
 ## 开发
 
 ```bash
-npm test          # node --test，50 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，65 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```

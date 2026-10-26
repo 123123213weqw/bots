@@ -67,13 +67,22 @@ NODE_VERSION="$(ssh "$TARGET" "'$NODE_BIN' -v")"
 echo "==> node version: $NODE_VERSION"
 ssh "$TARGET" "ln -sfn '$NODE_BIN' ~/bots/.node"
 
-echo "==> installing systemd user unit"
-ssh "$TARGET" "mkdir -p ~/.config/systemd/user \
+echo "==> installing systemd user units"
+ssh "$TARGET" "mkdir -p ~/.config/systemd/user ~/bots/.state \
   && cp ~/bots/deploy/bot.service ~/.config/systemd/user/$SERVICE.service \
+  && cp ~/bots/deploy/digest.service ~/.config/systemd/user/digest.service \
+  && cp ~/bots/deploy/digest.timer ~/.config/systemd/user/digest.timer \
   && systemctl --user daemon-reload"
 
 if [[ $ENABLE == 1 ]]; then
   ssh "$TARGET" "systemctl --user enable $SERVICE.service"
+  # The timer is only meaningful once DIGEST_CHAT_ID exists; skip it politely.
+  if ssh "$TARGET" "grep -q '^DIGEST_CHAT_ID=' ~/bots/.env"; then
+    ssh "$TARGET" "systemctl --user enable --now digest.timer"
+    echo "==> digest timer enabled: $(ssh "$TARGET" 'systemctl --user list-timers digest.timer --no-pager | head -2 | tail -1')"
+  else
+    echo "!! DIGEST_CHAT_ID not set on the target — digest timer left disabled"
+  fi
 fi
 
 echo "==> restarting"

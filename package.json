@@ -14,7 +14,8 @@
     "start:dist": "node dist/index.js",
     "test": "node --test \"tests/*.test.ts\"",
     "send": "node src/cli.ts",
-    "doctor": "node src/doctor.ts"
+    "doctor": "node src/doctor.ts",
+    "digest": "node src/digest.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"
