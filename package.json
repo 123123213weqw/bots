@@ -12,8 +12,9 @@
     "dev": "node --watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start:dist": "node dist/index.js",
-    "test": "node --test tests/",
-    "send": "node src/cli.ts"
+    "test": "node --test \"tests/*.test.ts\"",
+    "send": "node src/cli.ts",
+    "doctor": "node src/doctor.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"

@@ -94,12 +94,29 @@ DEEPSEEK_MODEL=deepseek-chat
 
 上下文是**每群/每人独立、有上限**的（默认 6 条消息、最多 200 个会话），进程重启即忘记——故意不做持久化，避免把群聊历史落盘。
 
+### 自检
+
+```bash
+npm run doctor        # 一条命令查完：飞书凭据 / token / 模型 key 是否真的可用
+```
+
+输出示例（不打印任何密钥）：
+
+```
+ok    feishu env           app_id present, secret 32 chars
+ok    feishu credentials   token ok (42 chars, 2904s)
+ok    deepseek key         deepseek-chat replied in 689ms
+```
+
+密钥轮换、额度耗尽、项目被停用时，bot **不会崩**，只会降级（回显模式或"模型暂时不可用"）——所有健康检查都还是绿的。所以怀疑"它今天怎么变笨了"时先跑这个；退出码非 0 也可用来卡部署。
+
 **密钥安全**（代码层面保证，不是靠自觉）：
 
 - key 只从环境变量读，从不打印、不写日志、不进错误信息；provider 若在报错里回显 key，`redact()` 会先抹掉。
 - 请求体也从不落日志——用户提问可能同样敏感。
 - `.env` 在 `.gitignore` 里，`deploy.sh` **默认保留服务器上的 `.env`**，不会用本地文件覆盖（只有 `PUSH_ENV=1` 才覆盖）；否则每次部署都会悄悄删掉服务器上的 key。
-- 没有 key 时不会崩，只是回显——所以“看起来在跑”不等于“模型接上了”，启动日志会明确打印 `llm=deepseek-chat` 或 `llm=none (echo mode)`。
+- 没有 key 时不会崩，只是回显——所以"看起来在跑"不等于"模型接上了"，启动日志会明确打印 `llm=deepseek-chat` 或 `llm=none (echo mode)`。
+- 和别的服务共用一个 key 时要记住：**对方轮换 key，你这边会静默降级**。`npm run doctor` 就是为这种情况准备的。
 
 ## 三个必须知道的约束
 
@@ -162,6 +179,7 @@ src/
   llm.ts       DeepSeek 客户端（含 redact，保证 key 不外泄）
   handler.ts   业务逻辑：命令 + 模型调用 + 上下文（可注入假模型测试）
   history.ts   每会话短上下文，有上限
+  doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
 tests/         node:test，50 个用例，全部离线
