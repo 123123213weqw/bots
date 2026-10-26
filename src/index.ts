@@ -2,50 +2,40 @@
 /**
  * Entry point: open the long connection and wire events to the handler.
  *
- * The `im:message.receive_v1` event is delivered with a 3-second budget; the
- * Bot only enqueues, so this file stays boring on purpose.
+ * The receive event has a 3-second budget; Bot only enqueues, so the model call
+ * may take as long as it needs without triggering platform retries.
  */
 import * as lark from "@larksuiteoapi/node-sdk";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { Bot } from "./bot.ts";
-import type { Incoming, Reply } from "./bot.ts";
 import { FeishuMessenger } from "./feishu.ts";
-import { readConfig } from "./config.ts";
+import { createHandler } from "./handler.ts";
+import { deepSeekFromEnv } from "./llm.ts";
+import { loadEnv, readConfig } from "./config.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SAMPLE_IMAGE = join(ROOT, "assets", "sample.png");
 
-/**
- * Replace this. Everything else in the project is plumbing.
- *
- * Anything you send back is delivered as a reply in the same thread.
- */
-async function handler(message: Incoming): Promise<Reply | null> {
-  if (message.msgType !== "text") {
-    return { kind: "text", text: `暂时只处理文本消息（收到 ${message.msgType}）。` };
-  }
-  switch (message.text.toLowerCase()) {
-    case "":
-      return { kind: "text", text: "在，说点什么？" };
-    case "ping":
-      return { kind: "text", text: "pong" };
-    // Demonstrates the whole media pipeline: upload once, then send by key.
-    case "图":
-    case "图片":
-    case "image":
-    case "pic":
-      return { kind: "image", source: SAMPLE_IMAGE };
-    default:
-      return { kind: "text", text: `收到：${message.text}` };
-  }
-}
-
 async function main(): Promise<void> {
+  // Must run before anything reads process.env: a model client created earlier
+  // would bind to an empty key and the bot would silently sit in echo mode
+  // while every health check still looked fine.
+  loadEnv();
+
   const { appId, appSecret } = readConfig();
   const sdk = new lark.Client({ appId, appSecret });
   const messenger = new FeishuMessenger(sdk);
+
+  const llm = deepSeekFromEnv();
+  const handler = createHandler({
+    llm,
+    imagePath: SAMPLE_IMAGE,
+    systemPrompt: process.env.BOT_SYSTEM_PROMPT?.trim() || undefined,
+    secret: process.env.DEEPSEEK_API_KEY ?? "",
+  });
+
   const bot = new Bot(messenger, handler, {
     mode: process.env.BOT_REPLY_MODE === "send" ? "send" : "reply",
   });
@@ -67,7 +57,9 @@ async function main(): Promise<void> {
     onReconnected: () => console.info("connection restored"),
   });
 
-  console.info(`connecting app_id=${appId}`);
+  console.info(
+    `connecting app_id=${appId} llm=${llm ? llm.model : "none (echo mode)"}`,
+  );
   await ws.start({ eventDispatcher: dispatcher });
 
   const shutdown = async (signal: string): Promise<void> => {

@@ -71,6 +71,36 @@ npm run send -- image --chat oc_xxx --file assets/sample.png
 npm run send -- text  --chat oc_xxx "build passed"
 ```
 
+## 接大模型（DeepSeek）
+
+`.env` 里配上三行就生效，不配则自动退回回显模式（不会启动失败）：
+
+```
+DEEPSEEK_API_KEY=<你的 key>
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+因为是 OpenAI 兼容接口，换任何同协议的供应商（`.../v1`、中转、本地 vLLM）只改 `BASE_URL` + `MODEL` 即可。
+
+行为：
+
+| 输入 | 反应 |
+|---|---|
+| `ping` | 直接回 `pong`，不调模型 |
+| `图` / `图片` / `image` / `pic` | 回示例图片，不调模型 |
+| `清空` / `重置` / `reset` | 真的清空该会话上下文 |
+| 其它文本 | 带上下文调用模型 |
+
+上下文是**每群/每人独立、有上限**的（默认 6 条消息、最多 200 个会话），进程重启即忘记——故意不做持久化，避免把群聊历史落盘。
+
+**密钥安全**（代码层面保证，不是靠自觉）：
+
+- key 只从环境变量读，从不打印、不写日志、不进错误信息；provider 若在报错里回显 key，`redact()` 会先抹掉。
+- 请求体也从不落日志——用户提问可能同样敏感。
+- `.env` 在 `.gitignore` 里，`deploy.sh` **默认保留服务器上的 `.env`**，不会用本地文件覆盖（只有 `PUSH_ENV=1` 才覆盖）；否则每次部署都会悄悄删掉服务器上的 key。
+- 没有 key 时不会崩，只是回显——所以“看起来在跑”不等于“模型接上了”，启动日志会明确打印 `llm=deepseek-chat` 或 `llm=none (echo mode)`。
+
 ## 三个必须知道的约束
 
 | 约束 | 后果 | 本仓库怎么处理 |
@@ -129,9 +159,12 @@ src/
   bot.ts       事件 → handler → 回复（去重、并发队列、reply/send 两种模式）
   feishu.ts    出站管线：文本分片、图片上传+缓存、文件、下载入站图片
   util.ts      Deduper / Queue / LruCache / chunk / stripMentions
+  llm.ts       DeepSeek 客户端（含 redact，保证 key 不外泄）
+  handler.ts   业务逻辑：命令 + 模型调用 + 上下文（可注入假模型测试）
+  history.ts   每会话短上下文，有上限
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，28 个用例，全部离线
+tests/         node:test，50 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd unit + deploy.sh + macOS launchd
 assets/        示例图片
@@ -140,12 +173,12 @@ assets/        示例图片
 ## 开发
 
 ```bash
-npm test          # node --test，28 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，50 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```
 
-测试覆盖的是容易写错的地方：重推 5 次只回 1 条、TTL/容量边界、代理对不被切断、上传只发生一次、错误码转成异常、handler 抛异常不影响后续消息。
+测试覆盖的是容易写错的地方：重推 5 次只回 1 条、TTL/容量边界、代理对不被切断、上传只发生一次、错误码转成异常、handler 抛异常不影响后续消息、**provider 在报错里回显 key 时被 redact**、`重置` 真的清了上下文、无 key 时退回回显而不是崩溃。
 
 ## 部署
 

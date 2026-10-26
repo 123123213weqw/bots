@@ -29,12 +29,25 @@ rsync -az --delete \
   --exclude dist --exclude .git --exclude __pycache__ --exclude .venv \
   ./ "$TARGET:~/bots/"
 
-if [[ -f .env ]]; then
-  echo "==> sending .env (mode 600)"
+# The remote .env is the source of truth once the box is set up: it may hold
+# credentials that deliberately never exist locally (an LLM key, for instance).
+# Overwriting it on every deploy would silently revoke them, so only send the
+# local file when the target has none, or when explicitly asked.
+if ssh "$TARGET" "test -f ~/bots/.env"; then
+  if [[ "${PUSH_ENV:-0}" == "1" && -f .env ]]; then
+    echo "==> PUSH_ENV=1: overwriting remote .env from local"
+    rsync -az .env "$TARGET:~/bots/.env"
+    ssh "$TARGET" "chmod 600 ~/bots/.env"
+  else
+    echo "==> keeping remote .env (set PUSH_ENV=1 to overwrite)"
+    ssh "$TARGET" "chmod 600 ~/bots/.env"
+  fi
+elif [[ -f .env ]]; then
+  echo "==> no remote .env yet, sending local one (mode 600)"
   rsync -az .env "$TARGET:~/bots/.env"
   ssh "$TARGET" "chmod 600 ~/bots/.env"
 else
-  echo "!! no local .env — the service will fail until one exists on the target"
+  echo "!! no .env locally or remotely — the service will fail until one exists"
 fi
 
 echo "==> installing dependencies and building on the target"
