@@ -1,0 +1,25 @@
+{
+  "name": "bots",
+  "version": "0.2.0",
+  "description": "Feishu/Lark bot over a WebSocket long connection, with an outbound media pipeline",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start:dist": "node dist/index.js",
+    "test": "node --test tests/",
+    "send": "node src/cli.ts"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.76.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

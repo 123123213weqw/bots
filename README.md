@@ -1,39 +1,91 @@
 # bots
 
-一个飞书 / Lark 机器人，用 **WebSocket 长连接**收发消息：不用公网 IP，不用域名，不用证书，不用内网穿透，不用自己处理加密和验签。
+一个飞书 / Lark 机器人，**TypeScript**，用 **WebSocket 长连接**收发消息：不用公网 IP，不用域名，不用证书，不用内网穿透，不用自己处理加密和验签。
 
-约 200 行，零框架，只依赖官方 SDK。同时包含**把开发者后台配置也脚本化**的部分 —— 那块没有公开 API，是这类项目真正卡住的地方。
+除了文本，还有一条完整的**出站媒体管线**：上传拿到 `image_key` → 再发消息。发图片、发文件都是这个套路。
 
 ```
-飞书事件 ──WS长连接──▶ on_event() 去重+入池 ──▶ respond() 你的逻辑 ──▶ 回复
+飞书事件 ──WS长连接──▶ onEvent() 去重+入队 ──▶ handler() 你的逻辑 ──▶ 回复
+                                                        │
+                                                        └─ 图片：upload → image_key → send
 ```
 
 ## 快速开始
 
 ```bash
 git clone https://github.com/<you>/bots.git && cd bots
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+npm install
 
 cp .env.example .env      # 填 FEISHU_APP_ID / FEISHU_APP_SECRET
-.venv/bin/python bot.py
+npm start                 # Node ≥ 23.6 可直接跑 TS
 ```
 
-日志出现 `connected to wss://msg-frontier.feishu.cn/...` 就连上了。在飞书里私聊机器人、或在群里 @ 它。
+日志出现 `connection ready` 就连上了。在飞书里私聊机器人、或在群里 @ 它。
 
-改业务逻辑只动一个方法：
+在聊天里发 **`图`**（或 `图片` / `image` / `pic`），它会回一张图 —— 用来验证媒体管线通没通。
 
-```python
-def respond(self, text: str, message) -> str | None:
-    if text == "ping":
-        return "pong"
-    return None          # 返回 None 就是不回复
+改业务逻辑只动 `src/index.ts` 里的 `handler()`：
+
+```ts
+async function handler(message: Incoming): Promise<Reply | null> {
+  if (message.text === "ping") return { kind: "text", text: "pong" };
+  if (message.text === "图")   return { kind: "image", source: "assets/sample.png" };
+  return null;                       // null = 不回复
+}
 ```
+
+## 发图片 / 发文件：两步
+
+平台不接受在消息体里塞二进制，必须先上传拿 key：
+
+| 步骤 | 接口 | 说明 |
+| --- | --- | --- |
+| 1 | `POST /open-apis/im/v1/images` | `image_type=message`，multipart 上传，返回 `image_key` |
+| 2 | `POST /open-apis/im/v1/messages` | `msg_type=image`，`content={"image_key":"..."}` |
+
+```ts
+// 一行：内部自动上传 + 缓存 + 发送
+await messenger.sendImage(chatId, "assets/sample.png");
+await messenger.replyImage(messageId, buffer);          // 回在某条消息的线程里
+const key = await messenger.uploadImage("chart.png");   // 只上传，复用 key
+```
+
+**必须多开一个权限：`im:resource`**（或 `im:resource:upload`）。它和 `im:message:send_as_bot` 是两回事 —— 只开消息权限上传会报 `99991672`，错误信息完全看不出是权限问题。
+
+限制（`src/feishu.ts` 里在本地就拦掉，不发无效请求）：
+
+| 项 | 值 |
+| --- | --- |
+| 图片大小 | ≤ 10 MB，0 字节直接拒绝 |
+| 图片格式 | JPG / JPEG / PNG / WEBP / GIF / BMP / ICO / TIFF / HEIC（TIFF、HEIC 会被转 JPG） |
+| 分辨率 | GIF ≤ 2000×2000，其他 ≤ 12000×12000，头像 ≤ 4096×4096 |
+| 文件大小 | ≤ 30 MB |
+
+同一张图重复发送只上传一次（按内容 sha256 缓存，LRU 100 条）。
+
+命令行也能发，方便塞进 CI / cron：
+
+```bash
+npm run send -- upload --file assets/sample.png          # 打印 image_key
+npm run send -- image --chat oc_xxx --file assets/sample.png
+npm run send -- text  --chat oc_xxx "build passed"
+```
+
+## 三个必须知道的约束
+
+| 约束 | 后果 | 本仓库怎么处理 |
+| --- | --- | --- |
+| 事件必须 **3 秒内**处理完，否则重推 4 次 | 慢逻辑会让你回复 5 条 | `onEvent` 只去重 + 入队，返回是同步的（有测试卡 <50ms） |
+| 重推 = 重复消息 | 重复回复 / 重复执行 | 按 `message_id` 去重；发送时再带一个由它派生的 `uuid`，让平台侧也去重 |
+| 长连接是集群模式，非广播 | 起两个实例不会分担，只会随机各收一半 | 单实例；扩容请自己做分片 |
+
+另外：每个应用最多 50 个连接；群里 @ 机器人时文本带 `@_user_1` 占位符，会剥掉（`stripMentions`）；`message.content` 是 **JSON 字符串**不是对象。
 
 ## 配置一个全新应用
 
 三条路，从少到多：
 
-**1. 官方一键建应用**（只需要扫码确认一次）
+**1. 官方一键建应用**（扫码确认一次，SCopes/事件都预填）
 
 ```python
 import lark_oapi as lark
@@ -41,8 +93,11 @@ lark.register_app(
     on_qr_code=lambda d: print(d["url"]),
     app_preset={"name": "my bot"},
     addons={
-        "scopes": {"tenant": ["im:message:send_as_bot",
-                              "im:message.p2p_msg:readonly"]},
+        "scopes": {"tenant": [
+            "im:message:send_as_bot",
+            "im:message.p2p_msg:readonly",
+            "im:resource",                 # 发图片必需
+        ]},
         "events": {"items": {"tenant": ["im.message.receive_v1"]}},
     },
 )
@@ -51,37 +106,46 @@ lark.register_app(
 **2. 本仓库的脚本**（已有应用，或需要发布版本）
 
 ```bash
-.venv/bin/pip install playwright && playwright install chrome
-.venv/bin/python bot.py &                      # mode 步骤要验证活的连接
-.venv/bin/python console/bootstrap.py scopes --headed
+python3 -m venv .venv && .venv/bin/pip install playwright && .venv/bin/playwright install chrome
+npm start &                                        # mode 步骤要验证活的连接
+.venv/bin/python console/bootstrap.py scopes
 .venv/bin/python console/bootstrap.py mode
 .venv/bin/python console/bootstrap.py event
 .venv/bin/python console/bootstrap.py publish
-.venv/bin/python console/bootstrap.py status   # 复核
-.venv/bin/python console/read_secret.py        # 写入 .env，不回显
+.venv/bin/python console/bootstrap.py status        # 复核
+.venv/bin/python console/read_secret.py             # 写入 .env，不回显
 ```
 
-**3. 手动点**：`docs/how-it-works.md` 里有逐项清单和两个踩过的坑。
+> 配置脚本仍是 Python + Playwright：控制台没有公开 API，只能驱动页面。
+> 见 `docs/how-it-works.md`，里面有逐项清单和三个踩过的坑。
+
+**3. 手动点**：`docs/how-it-works.md` 第二层。
 
 ## 目录
 
 ```
-bot.py                  机器人本体（去重 / 线程池 / 分片发送）
-console/bootstrap.py    后台配置：权限、长连接、事件、发布
-console/read_secret.py  取 App Secret 写入 .env（mode 600，不回显）
-deploy/bot.plist        macOS launchd 常驻
-docs/how-it-works.md    原理、约束、后台配置的坑
+src/
+  index.ts     入口：长连接 + 你的 handler
+  bot.ts       事件 → handler → 回复（去重、并发队列、reply/send 两种模式）
+  feishu.ts    出站管线：文本分片、图片上传+缓存、文件、下载入站图片
+  util.ts      Deduper / Queue / LruCache / chunk / stripMentions
+  cli.ts       命令行发送（cron / CI 通知）
+  config.ts    .env 读取
+tests/         node:test，28 个用例，全部离线
+console/       开发者后台自动化（Python + Playwright）
+deploy/        macOS launchd 常驻（node）
+assets/        示例图片
 ```
 
-## 三个必须知道的约束
+## 开发
 
-| 约束 | 后果 | 本仓库怎么处理 |
-| --- | --- | --- |
-| 事件必须 **3 秒内**处理完，否则重推 4 次 | 慢逻辑会让你回复 5 条 | `on_event()` 只去重+`submit()`，业务在池里 |
-| 重推 = 重复消息 | 重复回复 / 重复执行 | 按 `message_id` 去重（**不是** `event_id`） |
-| 长连接是集群模式，非广播 | 起两个实例不会分担，只会随机各收一半 | 单实例；要扩容请自己做分片，别靠多开 |
+```bash
+npm test          # node --test，28 个用例，不需要网络和凭据
+npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
+npx tsc -p tsconfig.test.json   # 连测试一起类型检查
+```
 
-另外：每个应用最多 50 个连接；群里 @ 机器人时文本里带 `@_user_1` 占位符，需要剥掉（`strip_mentions()`）。
+测试覆盖的是容易写错的地方：重推 5 次只回 1 条、TTL/容量边界、代理对不被切断、上传只发生一次、错误码转成异常、handler 抛异常不影响后续消息。
 
 ## 常驻
 
@@ -98,11 +162,11 @@ Linux 用 systemd，同理。
 - `.env`（mode 600）保存凭据，已在 `.gitignore` 里；**不要**提交。
 - `console/read_secret.py` 直接写文件而不打印，避免密钥进 shell history / 聊天记录。
 - Secret 泄露就在后台「凭证与基础信息 → 重置」，然后重新跑 `read_secret.py`。
-- `.state/profile` 是 Playwright 的登录态（约 100MB），可随时删；删后重新扫码。
+- `.state/profile` 是 Playwright 登录态（约 100MB），可随时删；删后重新扫码。
 
 ## 相关
 
-- 官方 SDK：[larksuite/oapi-sdk-python](https://github.com/larksuite/oapi-sdk-python)
+- 官方 SDK：[larksuite/oapi-sdk-nodejs](https://github.com/larksuite/oapi-sdk-nodejs) · [oapi-sdk-python](https://github.com/larksuite/oapi-sdk-python)
 - 官方示例：[oapi-sdk-python-demo](https://github.com/larksuite/oapi-sdk-python-demo)
 - 官方 CLI（不写代码直接收发）：[larksuite/cli](https://github.com/larksuite/cli)
 - 要现成的多平台 AI 机器人平台：[LangBot](https://github.com/langbot-app/LangBot)

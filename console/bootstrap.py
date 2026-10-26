@@ -31,6 +31,7 @@ SCOPES = [
     "im:message.p2p_msg:readonly",      # read direct messages to the bot
     "im:message.group_at_msg:readonly",  # read group messages that @ the bot
     "im:message:send_as_bot",            # send as the app
+    "im:resource",                       # upload images / files before sending
 ]
 EVENT = "im.message.receive_v1"
 PAYLOAD = json.dumps({"scopes": {"tenant": SCOPES, "user": []}}, ensure_ascii=False)
@@ -53,7 +54,14 @@ def add_scopes(page, aid: str) -> int:
         print("scopes: already present")
         return 0
 
-    page.get_by_role("button", name="Batch import/export scopes").first.click()
+    # The button used to be standalone; the console now folds it into a
+    # "Batch Actions" dropdown. Try both so a redesign does not silently break.
+    importer = page.get_by_role("button", name="Batch import/export scopes")
+    if importer.count() == 0:
+        page.get_by_role("button", name="Batch Actions").first.click()
+        page.wait_for_timeout(1200)
+        importer = page.get_by_text("Batch import/export scopes", exact=True)
+    importer.first.click()
     page.wait_for_timeout(2000)
 
     # The dialog's checkbox column sits outside the narrow side panel, so the
@@ -138,28 +146,35 @@ def add_event(page, aid: str) -> int:
 
 def publish(page, aid: str) -> int:
     page.goto(app_url(aid, "/version"), wait_until="domcontentloaded")
-    page.wait_for_timeout(6000)
-    if "Pending release" not in body_text(page) and "Create Version" not in body_text(page):
-        print("publish: unexpected version page")
-        return 1
-    if "Pending release" not in body_text(page):
-        page.get_by_role("button", name="Create Version").first.click()
-        page.wait_for_timeout(3500)
-        page.get_by_role("button", name="Save", exact=True).first.click()
+    page.wait_for_timeout(7000)
+    text = body_text(page)
+
+    # Three states exist: a draft already waiting ("View Version Details"), no
+    # draft at all, or already released. Handle each instead of assuming.
+    if "View Version Details" in text:
+        print("publish: draft already exists, opening it")
+        page.get_by_role("button", name="View Version Details").first.click()
         page.wait_for_timeout(5000)
+    elif "Create Version" in text:
+        print("publish: creating a version")
+        page.get_by_role("button", name="Create Version").first.click()
+        page.wait_for_timeout(4000)
+        page.get_by_role("button", name="Save", exact=True).first.click()
+        page.wait_for_timeout(6000)
+    else:
+        print("publish: no version controls found")
+        return 1
 
     publish_btn = page.get_by_role("button", name="Publish", exact=True)
     if publish_btn.count() == 0:
-        print("publish: no Publish button (already released?)")
-        return 0
+        print("publish: no Publish button")
+        return 1
     publish_btn.first.click()
     page.wait_for_timeout(3000)
     confirm = page.get_by_role("button", name="Publish", exact=True)
     if confirm.count() > 1:
         confirm.last.click()
-    elif "Submit the release request?" in body_text(page):
-        confirm.first.click()
-    page.wait_for_timeout(8000)
+    page.wait_for_timeout(9000)
 
     page.goto(app_url(aid), wait_until="domcontentloaded")
     page.wait_for_timeout(6000)

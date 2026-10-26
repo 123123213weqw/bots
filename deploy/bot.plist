@@ -16,8 +16,8 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>REPLACE_ME/.venv/bin/python</string>
-        <string>REPLACE_ME/bots/bot.py</string>
+        <string>REPLACE_ME/node/bin/node</string>
+        <string>REPLACE_ME/bots/src/index.ts</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -35,8 +35,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>LOG_LEVEL</key>
-        <string>INFO</string>
+        <key>BOT_REPLY_MODE</key>
+        <string>reply</string>
     </dict>
 </dict>
 </plist>
