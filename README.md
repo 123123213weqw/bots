@@ -190,10 +190,12 @@ AI Infra / 推理 日报 · 10/26
 
 ```
 DIGEST_CHAT_ID=oc_xxxxxxxxxxxx        # 推送到哪个群
-GITHUB_TOKEN=ghp_xxx                  # 可选：未认证搜索限 10 次/分钟
+GITHUB_TOKEN=ghp_xxx                  # 强烈建议：配额从 10 次/分升到 30 次/分
 ```
 
-不配 `GITHUB_TOKEN` 也能跑（每天 8 个查询，够用），但会偶发 403——代码会按 `Retry-After` 退避重试，单条查询失败也不会让整条日报变空。
+不配 `GITHUB_TOKEN` 也能跑，但每轮 8 个查询会撞上未认证的 10 次/分限制，表现为部分查询被跳过、日报变薄。代码会按 `Retry-After` 退避重试，单条失败不会让整条日报变空——但**配了 token 才是稳定的**。
+
+> **权限提醒**：搜索公开仓库只需要一个**零 scope** 的 token。`gh auth token` 导出的现有 token 往往带着 `repo`、`admin:org` 甚至 `delete_repo`，把它放到服务器上等于把删库和组织管理权限交给那台机器。理想做法是在 GitHub 单独创建一个 **Fine-grained token，不勾任何权限**（或 classic PAT 只勾 `public_repo`），只用于读搜索。
 
 定时：`deploy/digest.timer` 在 **00:00 / 06:00 / 12:00 / 18:00**（CST），`Persistent=true` 让关机错过的那个时段在开机后补跑一次，`RandomDelaySec=900` 避免和其他定时器同秒。
 
