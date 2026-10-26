@@ -136,9 +136,9 @@ cd ~/bots && ./deploy/set-key.sh     # 粘贴新 key 后 Ctrl-D
 
 想彻底解耦，只有在 DeepSeek 控制台给 bot 单独签一个 key（同账号可有多个，额度共用、吊销互不影响），然后用上面的 `set-key.sh` 换上。
 
-## 每日 AI Infra 日报
+## AI Infra 日报（每 6 小时）
 
-每天推一条「GitHub 上 AI 推理基础设施」的推荐到飞书群。
+每 6 小时推一条「GitHub 上 AI 推理基础设施」的推荐到飞书群，每天 4 轮、每轮 3 个。
 
 ```bash
 npm run digest                 # 推送到 DIGEST_CHAT_ID
@@ -153,9 +153,22 @@ npm run digest -- --reset-seen # 清空已推荐记录（测试用）
 | 数据 | 全部现查 GitHub Search API，元数据永远是真的 |
 | 描述 | **直接引用仓库自己的 description，不改写**——所以不会出现编造的项目 |
 | 排序 | 新项目按 star/天，生态按 star + 近期提交，都是可复算的指标 |
-| 去重 | `.state/digest-seen.json` 记住已推的，`seen` 满 400 条滚动淘汰 |
+| 去重 | `.state/digest-seen.json` 记住已推的，**按 21 天到期**而不是按条数 |
 
-过滤做了两层，都是踩出来的：**topic 搜索很脏**（`gitleaks` 这种密钥扫描器被标了 `topic:llm-inference`），所以相关性只看 description 里的强信号词（`inference` / `serving` / `kv-cache` / `paged-attention` / `triton` / `quantiz` …）。**裸的 `llm` 这个词不能用**——它让微调工具 LlamaFactory 混进了"推理服务"栏目。
+过滤做了三层，全部是看了真实输出才补的：
+
+1. **topic 搜索很脏**：`gitleaks`（密钥扫描器）被标了 `topic:llm-inference`，所以相关性不看 topic，看 description。
+2. **裸的 `llm` 不能用**：它让微调工具 LlamaFactory 混进了"推理服务"栏目。微调 / 数据集 / awesome-list 一律判为 off-topic。
+3. **裸的 `gpu` / `cuda` 也不能用**：`cupy/cupy`（"NumPy & SciPy for GPU"）就是靠 `topic:cuda` 混进来的。必须提到推理、serving、kernel 或模型内部结构才算。
+
+### 为什么 6 小时一轮要改两个数
+
+每天 4 轮 × 每轮 5 个 = 20 个，两天就把候选池抽干，之后只能推不相关的东西。所以：
+
+- 每轮 **2 新 + 1 生态 = 3 个**
+- `seen` 改成**按天过期（21 天）**，不再按条数封顶——条数上限和"每天跑 4 次"根本不匹配
+
+查询之间还会间隔 2 秒（未配置 `GITHUB_TOKEN` 时），否则 8 个查询连着发必触发 403，日报会静默变薄。
 
 输出示例（真实数据）：
 
@@ -182,7 +195,7 @@ GITHUB_TOKEN=ghp_xxx                  # 可选：未认证搜索限 10 次/分�
 
 不配 `GITHUB_TOKEN` 也能跑（每天 8 个查询，够用），但会偶发 403——代码会按 `Retry-After` 退避重试，单条查询失败也不会让整条日报变空。
 
-定时：`deploy/digest.timer` 每天 09:00（`Persistent=true`，关机错过会在开机后补跑一次）。
+定时：`deploy/digest.timer` 在 **00:00 / 06:00 / 12:00 / 18:00**（CST），`Persistent=true` 让关机错过的那个时段在开机后补跑一次，`RandomDelaySec=900` 避免和其他定时器同秒。
 
 ## 三个必须知道的约束
 

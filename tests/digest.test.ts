@@ -45,6 +45,18 @@ test("relevance rejects noise that topic search drags in", () => {
   );
 });
 
+test("a general GPU library is not an inference project", () => {
+  // Matched via topic:cuda and would have been recommended before.
+  assert.equal(
+    isRelevant(repo({ full_name: "cupy/cupy", description: "NumPy & SciPy for GPU" })),
+    false,
+  );
+  assert.equal(
+    isRelevant(repo({ full_name: "x/gpu-tools", description: "Utilities for GPU" })),
+    false,
+  );
+});
+
 test("adjacent work is rejected: fine-tuning is not inference serving", () => {
   // This really did show up in the ecosystem section before the filter existed.
   assert.equal(
@@ -113,12 +125,27 @@ test("dedupe drops seen and repeated names, keeping order", () => {
 test("selection takes 3 fresh and 2 ecosystem without overlap", () => {
   const fresh = Array.from({ length: 5 }, (_, i) => repo({ full_name: `fresh/${i}` }));
   const eco = Array.from({ length: 5 }, (_, i) => repo({ full_name: `eco/${i}` }));
-  const sel = selectRepos({ fresh, ecosystem: eco }, new Set());
+  const sel = selectRepos({ fresh, ecosystem: eco }, new Set(), 3, 2);
 
   assert.equal(sel.fresh.length, 3);
   assert.equal(sel.ecosystem.length, 2);
   const all = [...sel.fresh, ...sel.ecosystem].map((r) => r.full_name);
   assert.equal(new Set(all).size, 5, "a repo was selected twice");
+});
+
+test("duplicate suppression accepts any ReadonlySet, not just Set", () => {
+  const a = repo({ full_name: "a/one" });
+  const readonly: ReadonlySet<string> = new Set(["a/one"]);
+  assert.deepEqual(dedupe([a], readonly), []);
+});
+
+test("the default per-run count suits a 6-hourly schedule", () => {
+  const fresh = Array.from({ length: 9 }, (_, i) => repo({ full_name: `fresh/${i}` }));
+  const eco = Array.from({ length: 9 }, (_, i) => repo({ full_name: `eco/${i}` }));
+  const sel = selectRepos({ fresh, ecosystem: eco }, new Set());
+  // 4 rounds a day at 3 per round is 12 repos/day; the pools cannot sustain the
+  // old 5-per-message default without exhausting candidates within two days.
+  assert.equal(sel.fresh.length + sel.ecosystem.length, 3);
 });
 
 test("selection respects the seen list", () => {
@@ -130,7 +157,7 @@ test("selection respects the seen list", () => {
 test("selection backfills from the other pool when one is exhausted", () => {
   const fresh = [repo({ full_name: "fresh/only" })];
   const eco = Array.from({ length: 6 }, (_, i) => repo({ full_name: `eco/${i}` }));
-  const sel = selectRepos({ fresh, ecosystem: eco }, new Set());
+  const sel = selectRepos({ fresh, ecosystem: eco }, new Set(), 3, 2);
   const total = sel.fresh.length + sel.ecosystem.length;
   assert.equal(total, 5, `expected 5 entries, got ${total}`);
 });

@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily AI-inference repo digest to Feishu
+Description=AI-inference repo digest to Feishu (every 6h)
 Documentation=https://github.com/123123213weqw/bots
 After=network-online.target
 Wants=network-online.target

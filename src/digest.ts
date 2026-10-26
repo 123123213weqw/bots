@@ -28,7 +28,14 @@ import { loadEnv, readConfig } from "./config.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEEN_FILE = join(HERE, "..", ".state", "digest-seen.json");
-const MAX_SEEN = 400;
+/**
+ * How long a repo stays "already recommended".
+ *
+ * A count cap is the wrong bound for a 6-hourly digest: four rounds a day would
+ * burn 800 slots in two days. Expiring by age instead means the pool refreshes
+ * on a schedule that matches how fast the reader forgets, not how often we run.
+ */
+const SEEN_TTL_DAYS = 21;
 const DAY = 86_400_000;
 
 /**
@@ -39,7 +46,13 @@ const DAY = 86_400_000;
  * serving. A mention of LLMs is not evidence that a project serves them.
  */
 const STRONG =
-  /inferenc|serving|serve[drs]?\b|vllm|sglang|tensorrt|kv[- ]?cache|paged[- ]?attention|\bcuda\b|\bgpu\b|\btriton\b|quantiz|\bmlx\b|throughput|continuous[- ]?batch|speculative[- ]?decod|prefill|decode[- ]?kernel/i;
+  /inferenc|serving|serve[drs]?\b|vllm|sglang|tensorrt|kv[- ]?cache|paged[- ]?attention|attention|quantiz|\bmlx\b|throughput|continuous[- ]?batch|speculative[- ]?decod|prefill|decode[- ]?kernel|\bmoe\b|transformer|embedding|distillat|\bllama\b/i;
+
+/**
+ * Bare "GPU" or "CUDA" is not a signal: it let a general GPU array library
+ * (CuPy, "NumPy & SciPy for GPU") into an inference digest through topic:cuda.
+ * A project has to mention inference, serving, kernels or model internals.
+ */
 
 /**
  * Things that look adjacent but are a different job: training, fine-tuning,
@@ -147,7 +160,7 @@ export function starsPerDay(repo: Repo, now = Date.now()): number {
   return repo.stargazers_count / days;
 }
 
-export function dedupe(repos: Repo[], seen: Set<string>): Repo[] {
+export function dedupe(repos: Repo[], seen: ReadonlySet<string>): Repo[] {
   const out: Repo[] = [];
   const considered = new Set<string>();
   for (const repo of repos) {
@@ -172,9 +185,9 @@ function take(candidates: Repo[], want: number, chosen: Set<string>): Repo[] {
 
 export function selectRepos(
   pools: { fresh: Repo[]; ecosystem: Repo[] },
-  seen: Set<string>,
-  wantFresh = 3,
-  wantEco = 2,
+  seen: ReadonlySet<string>,
+  wantFresh = 2,
+  wantEco = 1,
 ): Selections {
   const chosen = new Set<string>();
   const fresh = take(dedupe(pools.fresh, seen), wantFresh, chosen);
@@ -244,19 +257,36 @@ export function formatDigest(sel: Selections, date = new Date()): string {
   return parts.join("\n");
 }
 
-function loadSeen(): Set<string> {
+type SeenMap = Map<string, number>;
+
+function loadSeen(): SeenMap {
+  const seen: SeenMap = new Map();
+  let raw: { names?: string[]; entries?: Record<string, number> };
   try {
-    const raw = JSON.parse(readFileSync(SEEN_FILE, "utf8")) as { names?: string[] };
-    return new Set(raw.names ?? []);
+    raw = JSON.parse(readFileSync(SEEN_FILE, "utf8"));
   } catch {
-    return new Set();
+    return seen;
   }
+  const cutoff = Date.now() - SEEN_TTL_DAYS * DAY;
+  // Entries recorded before the timestamp format existed have no age, so they
+  // are treated as current rather than dropped.
+  for (const name of raw.names ?? []) {
+    if (!(name in (raw.entries ?? {}))) seen.set(name, Date.now());
+  }
+  for (const [name, at] of Object.entries(raw.entries ?? {})) {
+    if (at >= cutoff) seen.set(name, at);
+  }
+  return seen;
 }
 
-function saveSeen(seen: Set<string>): void {
-  const names = [...seen].slice(-MAX_SEEN);
+function saveSeen(seen: SeenMap): void {
+  const cutoff = Date.now() - SEEN_TTL_DAYS * DAY;
+  const entries: Record<string, number> = {};
+  for (const [name, at] of seen) {
+    if (at >= cutoff) entries[name] = at;
+  }
   mkdirSync(dirname(SEEN_FILE), { recursive: true });
-  writeFileSync(SEEN_FILE, JSON.stringify({ names }, null, 2));
+  writeFileSync(SEEN_FILE, JSON.stringify({ entries }, null, 2));
 }
 
 async function collect(): Promise<{ fresh: Repo[]; ecosystem: Repo[] }> {
@@ -278,9 +308,15 @@ async function collect(): Promise<{ fresh: Repo[]; ecosystem: Repo[] }> {
     `topic:quantization stars:>800 pushed:>${active}`,
   ];
 
+  // Unauthenticated search allows ~10 requests per minute, and this job issues
+  // eight. Firing them back to back reliably trips a 403 halfway through, which
+  // silently thins the digest. Space them out instead of paying for a token.
+  const GAP_MS = process.env.GITHUB_TOKEN ? 0 : 2_000;
+
   const runAll = async (queries: string[], sort: string): Promise<Repo[]> => {
     const out: Repo[] = [];
-    for (const q of queries) {
+    for (const [index, q] of queries.entries()) {
+      if (index > 0 && GAP_MS > 0) await sleep(GAP_MS);
       try {
         out.push(...(await search(q, 20, sort)));
       } catch (error) {
@@ -303,13 +339,15 @@ async function main(): Promise<number> {
   loadEnv();
   const dryRun = process.argv.includes("--dry-run");
   if (process.argv.includes("--reset-seen")) {
-    saveSeen(new Set());
+    saveSeen(new Map());
     console.log("seen list cleared");
   }
 
   const pools = await collect();
   const seen = loadSeen();
-  const selection = selectRepos(pools, seen);
+  // selectRepos only cares about which names are excluded, not when they were sent.
+  const seenNames = new Set(seen.keys());
+  const selection = selectRepos(pools, seenNames);
   const message = formatDigest(selection);
 
   if (dryRun) {
@@ -328,8 +366,9 @@ async function main(): Promise<number> {
   const ids = await messenger.sendText(chatId, message);
   console.log(`sent parts=${ids.length} ids=${ids.join(",")}`);
 
+  const now = Date.now();
   for (const repo of [...selection.fresh, ...selection.ecosystem]) {
-    seen.add(repo.full_name);
+    seen.set(repo.full_name, now);
   }
   saveSeen(seen);
   console.log(`seen=${seen.size}`);

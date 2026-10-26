@@ -1,15 +1,17 @@
 [Unit]
-Description=Run the AI-inference digest every morning
+Description=Run the AI-inference digest every six hours
 Documentation=https://github.com/123123213weqw/bots
 
 [Timer]
-# 09:00 in the system timezone. The host is CST (UTC+8); NODE/TZ is pinned in
-# the service so the date in the message is the same day the reader sees.
-OnCalendar=*-*-* 09:00:00
-# If the machine was off at 09:00, run once when it comes back rather than
-# skipping the day entirely.
+# 00:00, 06:00, 12:00, 18:00 in the system timezone (host is CST, UTC+8).
+# The service pins TZ too, so the date printed in the message matches what the
+# reader sees regardless of how systemd was started.
+OnCalendar=*-*-* 00,06,12,18:00:00
+# A machine that was off for a slot runs once on boot rather than skipping it.
 Persistent=true
-RandomDelaySec=300
+# Spread the four daily runs so they do not all land on the same second as other
+# timers on this box.
+RandomDelaySec=900
 Unit=digest.service
 
 [Install]
