@@ -29,6 +29,13 @@ test("mentions are stripped", () => {
   assert.equal(stripMentions("no mention"), "no mention");
 });
 
+test("@_all is stripped too, not just @_user_N", () => {
+  assert.equal(stripMentions("@_all ship it"), "ship it");
+  assert.equal(stripMentions("@_all @_user_1 hi"), "hi");
+  // A lone mention leaves nothing, which is what the handler expects.
+  assert.equal(stripMentions("@_all"), "");
+});
+
 test("chunk: keeps short text intact and splits long text", () => {
   assert.deepEqual(chunk("short"), ["short"]);
   assert.deepEqual(chunk("a".repeat(9000)).map((s) => s.length), [4000, 4000, 1000]);

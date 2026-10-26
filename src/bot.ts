@@ -103,21 +103,21 @@ export class Bot {
   async #deliver(incoming: Incoming, reply: Reply): Promise<void> {
     const toThread = this.#mode === "reply";
     if (reply.kind === "text") {
-      if (toThread) {
-        await this.#messenger.replyText(incoming.messageId, reply.text, incoming.messageId);
-      } else {
-        await this.#messenger.sendText(incoming.chatId, reply.text, incoming.messageId);
-      }
+      const ids = toThread
+        ? await this.#messenger.replyText(incoming.messageId, reply.text, incoming.messageId)
+        : await this.#messenger.sendText(incoming.chatId, reply.text, incoming.messageId);
+      // Log the result: without it a silent success and a swallowed failure
+      // look identical in the journal.
+      this.#log.info(`sent text parts=${ids.length} ids=${ids.join(",")}`);
       return;
     }
     if (reply.caption) {
       if (toThread) await this.#messenger.replyText(incoming.messageId, reply.caption);
       else await this.#messenger.sendText(incoming.chatId, reply.caption);
     }
-    if (toThread) {
-      await this.#messenger.replyImage(incoming.messageId, reply.source);
-    } else {
-      await this.#messenger.sendImage(incoming.chatId, reply.source);
-    }
+    const imageId = toThread
+      ? await this.#messenger.replyImage(incoming.messageId, reply.source)
+      : await this.#messenger.sendImage(incoming.chatId, reply.source);
+    this.#log.info(`sent image id=${imageId}`);
   }
 }

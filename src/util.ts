@@ -34,9 +34,15 @@ export class Deduper {
   }
 }
 
-/** Group messages arrive as "@_user_1 hello"; drop the placeholders. */
+/**
+ * Group messages arrive as "@_user_1 hello"; drop the placeholders.
+ *
+ * "@_all" (mention everyone) is a separator too and is NOT matched by the
+ * @_user_N form, so a message "@_all ship it" would otherwise reach the handler
+ * with the token attached and every command parser would miss.
+ */
 export function stripMentions(text: string): string {
-  return text.replace(/@_user_\d+\s*/g, "").trim();
+  return text.replace(/@_user_\d+\s*|@_all\s*/g, "").trim();
 }
 
 /** Split text into platform-sized chunks without breaking surrogate pairs. */
