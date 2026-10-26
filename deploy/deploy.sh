@@ -40,6 +40,20 @@ fi
 echo "==> installing dependencies and building on the target"
 ssh "$TARGET" "cd ~/bots && npm ci --no-audit --no-fund >/dev/null && npx tsc -p tsconfig.json && echo built: \$(ls dist | tr '\n' ' ')"
 
+# Pick the interpreter for this service only. Default: whatever node is on PATH.
+# Override with NODE_BIN=/opt/node-v24.22.1/bin/node to run a newer Node than the
+# host's system node (do NOT repoint /usr/local/bin/node on a shared box). The
+# symlink keeps bot.service host-independent and makes a switch a one-liner.
+NODE_BIN="${NODE_BIN:-}"
+if [[ -z "$NODE_BIN" ]]; then
+  NODE_BIN="$(ssh "$TARGET" 'command -v node')"
+fi
+echo "==> interpreter: $NODE_BIN"
+ssh "$TARGET" "test -x '$NODE_BIN' || { echo 'not executable: $NODE_BIN'; exit 1; }"
+NODE_VERSION="$(ssh "$TARGET" "'$NODE_BIN' -v")"
+echo "==> node version: $NODE_VERSION"
+ssh "$TARGET" "ln -sfn '$NODE_BIN' ~/bots/.node"
+
 echo "==> installing systemd user unit"
 ssh "$TARGET" "mkdir -p ~/.config/systemd/user \
   && cp ~/bots/deploy/bot.service ~/.config/systemd/user/$SERVICE.service \

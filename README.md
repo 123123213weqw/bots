@@ -159,15 +159,29 @@ Node 版本决定跑法：
 | 22.6 - 23.5 | `node --experimental-strip-types src/index.ts` |
 | 20 - 22.5 | `npm run build && node dist/index.js`（生产建议一律用这条） |
 
-`npm test` 直接跑 `.ts`，需要 Node >= 22.6；Node 20 上请只跑编译产物。
+`npm test` 直接跑 `.ts`，需要 Node >= 22.6；Node 20 上跑不了测试，只能跑编译产物。
+`deploy.sh` 生产路径一律用 `dist/`，所以 Node 20 也能正常服务，只是本地开发受限。
 
 ### Linux / systemd（推荐）
 
 ```bash
 ./deploy/deploy.sh user@host        # 同步 + 装依赖 + 编译 + 装 unit + 重启
+
+# 宿主机 Node 太老、又不想动系统 Node 时，指定一个独立解释器：
+NODE_BIN=/opt/node-v24.22.1/bin/node ./deploy/deploy.sh user@host
 ```
 
 前提：目标机已执行 `loginctl enable-linger <user>`，否则登出后用户级服务会被回收。
+
+**不要动 `/usr/local/bin/node`** —— 共享机器上往往还有别的服务（宝塔面板、其它 Node 项目）挂在上面。`deploy.sh` 只把 `~/bots/.node` 这个软链接指向你选的解释器，`bot.service` 用 `%h/bots/.node`，所以换版本就是 `ln -sfn`，一个命令、互不影响。独立装一份 Node：
+
+```bash
+V=v24.22.1
+curl -fsSLO https://npmmirror.com/mirrors/node/$V/node-$V-linux-x64.tar.xz
+curl -fsSL  https://npmmirror.com/mirrors/node/$V/SHASUMS256.txt | grep "$V-linux-x64.tar.xz" | sha256sum -c
+sudo mkdir -p /opt && sudo tar -xJf node-$V-linux-x64.tar.xz -C /opt \
+  && sudo mv /opt/node-$V-linux-x64 /opt/node-$V
+```
 
 手工等价步骤：
 
