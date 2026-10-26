@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keep the bot alive across logins and crashes on macOS.
+
+  Edit the two REPLACE_ME paths, then:
+      cp deploy/bot.plist ~/Library/LaunchAgents/com.example.bots.plist
+      launchctl load -w ~/Library/LaunchAgents/com.example.bots.plist
+      launchctl list | grep bots
+  Logs: /tmp/bots.out /tmp/bots.err
+  Stop: launchctl unload -w ~/Library/LaunchAgents/com.example.bots.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.bots</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_ME/.venv/bin/python</string>
+        <string>REPLACE_ME/bots/bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_ME/bots</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/bots.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/bots.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+</dict>
+</plist>
