@@ -118,6 +118,24 @@ ok    deepseek key         deepseek-chat replied in 689ms
 - 没有 key 时不会崩，只是回显——所以"看起来在跑"不等于"模型接上了"，启动日志会明确打印 `llm=deepseek-chat` 或 `llm=none (echo mode)`。
 - 和别的服务共用一个 key 时要记住：**对方轮换 key，你这边会静默降级**。`npm run doctor` 就是为这种情况准备的。
 
+### 换 key（不回显）
+
+```bash
+ssh host
+cd ~/bots && ./deploy/set-key.sh     # 粘贴新 key 后 Ctrl-D
+```
+
+输入不回显、不进 `~/.bash_history`、不出现在 `ps` 里（这三处都是 `echo KEY >> .env` 的典型泄漏点）；写入是原子的，失败不会留下半个 `.env`；写完自动跑 `doctor` 验证，而不是把 key 打印出来让你肉眼核对。
+
+### 共用 key vs 独立 key
+
+| 场景 | 影响 |
+|---|---|
+| 教学项目改自己的 `.env` / 删文件 | bot **无影响**（值已独立复制） |
+| 教学项目在控制台**重置 key** | bot **同时断**，因为作废的是这个值本身，存在哪都没用 |
+
+想彻底解耦，只有在 DeepSeek 控制台给 bot 单独签一个 key（同账号可有多个，额度共用、吊销互不影响），然后用上面的 `set-key.sh` 换上。
+
 ## 三个必须知道的约束
 
 | 约束 | 后果 | 本仓库怎么处理 |
@@ -184,7 +202,7 @@ src/
   config.ts    .env 读取
 tests/         node:test，50 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
-deploy/        systemd unit + deploy.sh + macOS launchd
+deploy/        systemd unit + deploy.sh + set-key.sh + macOS launchd
 assets/        示例图片
 ```
 
