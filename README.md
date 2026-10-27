@@ -138,6 +138,78 @@ cd ~/bots && ./deploy/set-key.sh     # 粘贴新 key 后 Ctrl-D
 
 想彻底解耦，只有在 DeepSeek 控制台给 bot 单独签一个 key（同账号可有多个，额度共用、吊销互不影响），然后用上面的 `set-key.sh` 换上。
 
+## 对话状态机
+
+`src/machine.ts` 是一个约 200 行的显式状态机，`src/flows.ts` 放具体流程。
+
+现在有一个真实流程：**查仓库**（两步）
+
+```
+用户: 查仓库
+ bot: 请发送仓库名，格式 owner/repo（例如 vllm-project/vllm）。
+用户: vllm-project/vllm
+ bot: vllm-project/vllm
+      A high-throughput and memory-efficient inference and serving engine for LLMs
+      95626★ · Python · Apache-2.0 · 更新于 2026-10-26
+      https://github.com/vllm-project/vllm
+```
+
+为什么值得用状态机：这一步**一条消息做不到**，而让模型"猜"仓库 star 数正是要避免的编造。走状态机还顺带省掉两次模型调用。
+
+### 为什么不用"多轮 prompt 里塞指令"
+
+| | 状态机 | prompt 里塞指令 |
+|---|---|---|
+| 确定性 | 转移由代码决定 | 模型可能不按格式走 |
+| 成本 | 0 token | 每轮都要带完整指令 |
+| 可测 | 纯函数，97 个用例 | 只能靠实际对话试 |
+| 超时 | 显式 TTL | 无法表达 |
+
+需要模型做**判断**的地方仍交给模型；需要**流程**的地方用状态机。
+
+### 专门为"别把聊天关起来"做的三件事
+
+会话状态机最典型的故障是：用户发了一句「查仓库」然后走开，之后所有消息都只回「请发送 owner/repo」。所以：
+
+1. **每个状态都有 TTL**（默认 5 分钟，本流程 3 分钟）。超时自动丢弃，且新的触发词立刻可用。
+2. **随时可取消**：`取消` / `退出` / `算了` / `/cancel`。`重置` 命令同时清上下文和流程。
+3. **未匹配不等于卡死**：流程内收到不合格式的内容，回一句提示**但仍留在流程里**（不转给模型，否则模型会无视刚问过的问题）；取消或超时后立即恢复正常对话。
+
+### 加一个新流程
+
+只需要写一个 `MachineDef`，不需要改 handler：
+
+```ts
+const def: MachineDef = {
+  initial: "idle",
+  defaultTtlMs: 3 * 60_000,
+  cancel: /^(取消|\/cancel)$/i,
+  onUnmatched: "请……，或发「取消」退出。",
+  states: {
+    idle: {},
+    await_x: { prompt: "请发送 X。" },   // 进入该状态时的提示
+  },
+  transitions: [
+    { from: "*", match: /^开始X$/i, to: "await_x" },              // 入口
+    {
+      from: ["await_x"],
+      match: /^(.+)$/,
+      to: "idle",                                                 // 回到空闲
+      capture: { key: "x", group: 1 },                            // 存槽位
+      action: async (ctx) => `处理 ${ctx.data["x"]} 的结果`,       // 副作用
+    },
+  ],
+};
+```
+
+`action` 的返回值会替换 `reply`，所以网络请求、查库、写文件都放这里。
+
+### 一个假话 bug
+
+接流程时用真实数据验证，`cupy/cupy` 返回了「没找到」——但那个仓库明明存在。原因是本机断网导致 fetch 失败，而代码把所有失败都映射成 404。
+
+**「查不到」和「没查到」是两句话。** 现在只有真正的 404 才说「没找到」，传输错误说「网络出问题，稍后再试」，并有测试钉住这个区别。
+
 ## AI Infra 日报（每 6 小时）
 
 每 6 小时推一条「GitHub 上 AI 推理基础设施」的推荐到飞书群，每天 4 轮、每轮 3 个。
@@ -262,11 +334,14 @@ src/
   llm.ts       DeepSeek 客户端（含 redact，保证 key 不外泄）
   handler.ts   业务逻辑：命令 + 模型调用 + 上下文（可注入假模型测试）
   history.ts   每会话短上下文，有上限
+  machine.ts   对话状态机（TTL / 取消 / 槽位）
+  flows.ts     具体流程（查仓库）+ RepoFetcher 接口
+  github.ts    GitHub 仓库查询（404 与网络失败分开）
   digest.ts    每日 AI Infra 日报（GitHub API → 飞书群）
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，73 个用例，全部离线
+tests/         node:test，97 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
@@ -278,7 +353,7 @@ assets/        示例图片
 
 | job | 做什么 | 为什么 |
 |---|---|---|
-| `test (22|24)` | 类型检查 + 73 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
+| `test (22|24)` | 类型检查 + 97 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
 | `no-secrets` | 扫已跟踪文件和**全部 git 历史**里的 key 形态 | 密钥进了公开分支，后续 commit 是撤不回来的 |
 | `smoke-node20` | 用 Node 20 逐个 import 编译产物 | 生产机上 Node 20 还跑着别的服务，产物必须仍能被它加载 |
 
@@ -290,7 +365,7 @@ assets/        示例图片
 ## 开发
 
 ```bash
-npm test          # node --test，73 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，97 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```

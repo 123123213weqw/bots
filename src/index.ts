@@ -12,7 +12,10 @@ import { dirname, join } from "node:path";
 import { Bot } from "./bot.ts";
 import { FeishuMessenger } from "./feishu.ts";
 import { createHandler } from "./handler.ts";
+import { GitHubRepos } from "./github.ts";
 import { deepSeekFromEnv } from "./llm.ts";
+import { Dialogue } from "./machine.ts";
+import { repoLookupFlow } from "./flows.ts";
 import { loadEnv, readConfig } from "./config.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,8 +32,17 @@ async function main(): Promise<void> {
   const messenger = new FeishuMessenger(sdk);
 
   const llm = deepSeekFromEnv();
+
+  // Multi-step flows. Registered here so the model never sees the messages a
+  // flow is waiting on; see src/machine.ts for the timeouts that stop an
+  // abandoned flow from owning the chat.
+  const dialogue = new Dialogue(repoLookupFlow(new GitHubRepos({
+    token: process.env.GITHUB_TOKEN,
+  })));
+
   const handler = createHandler({
     llm,
+    dialogue,
     imagePath: SAMPLE_IMAGE,
     systemPrompt: process.env.BOT_SYSTEM_PROMPT?.trim() || undefined,
     secret: process.env.DEEPSEEK_API_KEY ?? "",

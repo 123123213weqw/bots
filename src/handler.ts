@@ -10,6 +10,7 @@
 import type { Incoming, Reply } from "./bot.ts";
 import { History } from "./history.ts";
 import { LlmError, redact } from "./llm.ts";
+import type { Dialogue } from "./machine.ts";
 import type { Llm } from "./llm.ts";
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -28,6 +29,11 @@ export interface HandlerOptions {
   logger?: Pick<Console, "info" | "error">;
   /** Secret to scrub from anything logged. */
   secret?: string;
+  /**
+   * Optional dialogue machine. Anything it reports as handled never reaches the
+   * model, which is what keeps multi-step flows deterministic.
+   */
+  dialogue?: Dialogue;
 }
 
 const IMAGE_WORDS = new Set(["图", "图片", "image", "pic"]);
@@ -56,7 +62,17 @@ export function createHandler(options: HandlerOptions) {
     }
     if (RESET_WORDS.has(command)) {
       history.clear(message.chatId);
+      options.dialogue?.clear(message.chatId);
       return { kind: "text", text: "已清空这个会话的上下文。" };
+    }
+
+    // Multi-step flows take precedence over the model: while a flow is asking
+    // for a slot, sending the answer to the model would ignore the question.
+    if (options.dialogue) {
+      const step = await options.dialogue.step(message.chatId, text);
+      if (step.handled) {
+        return step.reply ? { kind: "text", text: step.reply } : null;
+      }
     }
 
     if (!llm) {

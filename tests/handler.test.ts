@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createHandler } from "../src/handler.ts";
+import { Dialogue } from "../src/machine.ts";
 import { History } from "../src/history.ts";
 import { LlmError } from "../src/llm.ts";
 import type { ChatMessage, Llm } from "../src/llm.ts";
@@ -133,4 +134,73 @@ test("chats keep separate histories", async () => {
   await handler(incoming("hello", "text", "oc_B"));
   // neither call should contain the other chat's turn
   assert.equal(calls[1]?.length, 2, "history leaked across chats");
+});
+
+// ---- dialogue integration ---------------------------------------------------
+
+function goFlow() {
+  const d = new Dialogue({
+    initial: "idle",
+    states: { idle: {}, asking: { prompt: "请发送名字。" } },
+    cancel: /^(取消|cancel)$/i,
+    onUnmatched: "请发送名字，或发「取消」。",
+    transitions: [
+      { from: "*", match: /^开始$/i, to: "asking" },
+      {
+        from: ["asking"],
+        match: /^名字是(.+)$/,
+        to: "idle",
+        action: (ctx) => `记住了：${/^名字是(.+)$/.exec(ctx.text)![1]}`,
+      },
+    ],
+  });
+  return d;
+}
+
+test("a flow interruption is answered by the flow, not the model", async () => {
+  const { llm, calls } = fakeLlm("模型回答");
+  const dialogue = goFlow();
+  const handler = createHandler({ llm, dialogue, logger: quiet });
+
+  const first = await handler(incoming("开始"));
+  assert.equal((first as { text: string }).text, "请发送名字。");
+  assert.equal(calls.length, 0, "the trigger must not cost a model call");
+
+  const second = await handler(incoming("名字是老王"));
+  assert.match((second as { text: string }).text, /记住了：老王/);
+  assert.equal(calls.length, 0, "slot answers must not cost a model call either");
+});
+
+test("after the flow closes, the model answers again", async () => {
+  const { llm, calls } = fakeLlm("模型回答");
+  const handler = createHandler({ llm, dialogue: goFlow(), logger: quiet });
+
+  await handler(incoming("开始"));
+  await handler(incoming("名字是老王"));
+  const third = await handler(incoming("普通问题"));
+
+  assert.deepEqual(third, { kind: "text", text: "模型回答" });
+  assert.equal(calls.length, 1, "the chat must not stay captured");
+});
+
+test("the reset command also drops an active flow", async () => {
+  const { llm, calls } = fakeLlm("模型回答");
+  const dialogue = goFlow();
+  const handler = createHandler({ llm, dialogue, logger: quiet });
+
+  await handler(incoming("开始"));
+  assert.ok(dialogue.peek("oc_1"), "flow should be active");
+
+  await handler(incoming("重置"));
+  assert.equal(dialogue.peek("oc_1"), undefined);
+
+  const after = await handler(incoming("普通问题"));
+  assert.deepEqual(after, { kind: "text", text: "模型回答" });
+  assert.equal(calls.length, 1);
+});
+
+test("without a dialogue the handler behaves exactly as before", async () => {
+  const { llm } = fakeLlm("模型回答");
+  const handler = createHandler({ llm, logger: quiet });
+  assert.deepEqual(await handler(incoming("开始")), { kind: "text", text: "模型回答" });
 });
