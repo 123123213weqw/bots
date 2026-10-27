@@ -11,6 +11,7 @@ import type { Incoming, Reply } from "./bot.ts";
 import { History } from "./history.ts";
 import { LlmError, redact } from "./llm.ts";
 import type { Dialogue } from "./machine.ts";
+import type { SandboxRuntime } from "./runtime.ts";
 import { LruCache } from "./util.ts";
 import {
   FileError,
@@ -48,7 +49,20 @@ export interface HandlerOptions {
    * does not need the SDK to exercise file paths.
    */
   downloadFile?: (messageId: string, fileKey: string) => Promise<Buffer>;
+  /**
+   * Sandboxed Rust host. Only reachable for open_ids on its allowlist; the
+   * check lives in the runtime, but the reply text here makes a refusal
+   * explicit instead of silently falling back to chat.
+   */
+  sandbox?: SandboxRuntime | null;
+  /** Command prefix that routes a message into the sandbox. */
+  sandboxTrigger?: RegExp;
 }
+
+const SANDBOX_COMMANDS = /^(?:沙箱|sandbox|跑|run|执行)\s+([\s\S]+)$/i;
+const SANDBOX_HELP =
+  "沙箱用法：`沙箱 <任务>`，例如 `沙箱 统计 src 下有多少个 ts 文件`。\n" +
+  "任务在隔离环境里执行（workspace 可写、宿主只读、断网）。";
 
 /** The last uploaded text file per chat, so a follow-up question can use it. */
 interface PendingFile {
@@ -166,6 +180,37 @@ export function createHandler(options: HandlerOptions) {
         const detail = error instanceof LlmError ? error.message : "unexpected error";
         logger.error(`file analysis failed: ${redact(detail, secret)}`);
         return { kind: "text", text: "模型暂时不可用，稍后再试。" };
+      }
+    }
+
+    // Sandbox dispatch. Placed before the model and before flows: a task
+    // request must never be "answered" conversationally.
+    const sandboxMatch = (options.sandboxTrigger ?? SANDBOX_COMMANDS).exec(text);
+    if (sandboxMatch) {
+      const task = (sandboxMatch[1] ?? "").trim();
+      const sandbox = options.sandbox;
+      if (!sandbox || !sandbox.configured) {
+        return { kind: "text", text: "沙箱服务未启用。" };
+      }
+      if (!sandbox.isAllowed(message.openId)) {
+        // Deny-by-default: say so plainly, and never run the task.
+        logger.error(`sandbox denied open_id=${message.openId ?? "-"} chat=${message.chatId}`);
+        return { kind: "text", text: "你没有沙箱执行权限。" };
+      }
+      if (!task) return { kind: "text", text: SANDBOX_HELP };
+      try {
+        const result = await sandbox.run({
+          chatId: message.chatId,
+          messageId: message.messageId,
+          text: task,
+          systemPrompt,
+        });
+        const header = result.status === "done" ? "完成" : `结束（${result.status}）`;
+        return { kind: "text", text: `${header}\n\n${result.finalText}` };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unknown";
+        logger.error(`sandbox failed chat=${message.chatId}: ${reason}`);
+        return { kind: "text", text: `沙箱执行失败：${reason}` };
       }
     }
 

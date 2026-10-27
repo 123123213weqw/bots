@@ -115,7 +115,8 @@ export class Bot {
   async #process(event: RawEvent): Promise<void> {
     const incoming = toIncoming(event);
     this.#log.info(
-      `recv chat=${incoming.chatId} type=${incoming.msgType} text=${JSON.stringify(incoming.text.slice(0, 120))}`,
+      // open_id 必须带上:它是白名单的键,没有它就无法判断"是谁在用"。
+      `recv chat=${incoming.chatId} open=${incoming.openId ?? "-"} type=${incoming.msgType} text=${JSON.stringify(incoming.text.slice(0, 120))}`,
     );
     const reply = await this.#handler(incoming);
     if (!reply) return;

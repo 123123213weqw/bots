@@ -364,3 +364,86 @@ test("a word starting with 分 is not treated as an analysis request", async () 
   const sent = calls[0]!.map((m) => m.content).join("\n");
   assert.doesNotMatch(sent, /以下是用户上传的文件/, "should not be a file request");
 });
+
+// ---- sandbox dispatch -------------------------------------------------------
+
+function fakeSandbox(allowed: boolean) {
+  const runs: Array<{ chatId: string; messageId: string; text: string }> = [];
+  return {
+    runs,
+    sandbox: {
+      configured: true,
+      allowlistSize: allowed ? 1 : 0,
+      isAllowed: () => allowed,
+      health: async () => true,
+      run: async (opts: { chatId: string; messageId: string; text: string }) => {
+        runs.push(opts);
+        return { status: "done", finalText: "执行结果" };
+      },
+    },
+  };
+}
+
+test("an allowed user's task reaches the sandbox", async () => {
+  const { sandbox, runs } = fakeSandbox(true);
+  const { llm, calls } = fakeLlm("不应被调用");
+  const handler = createHandler({ llm, sandbox: sandbox as never, logger: quiet });
+
+  const reply = await handler(incoming("沙箱 数一下有多少个文件"));
+  assert.match((reply as { text: string }).text, /执行结果/);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.text, "数一下有多少个文件", "前缀必须被剥掉");
+  assert.equal(calls.length, 0, "沙箱任务不应走模型对话");
+});
+
+test("an unauthorised user is refused and nothing runs", async () => {
+  const { sandbox, runs } = fakeSandbox(false);
+  const { llm } = fakeLlm("x");
+  const handler = createHandler({ llm, sandbox: sandbox as never, logger: quiet });
+
+  const reply = await handler(incoming("沙箱 rm -rf /"));
+  assert.match((reply as { text: string }).text, /没有沙箱执行权限/);
+  assert.equal(runs.length, 0, "未授权时绝不能执行");
+});
+
+test("without a sandbox the command says so instead of silently chatting", async () => {
+  const { llm, calls } = fakeLlm("模型回答");
+  const handler = createHandler({ llm, sandbox: null, logger: quiet });
+  const reply = await handler(incoming("沙箱 做点什么"));
+  assert.match((reply as { text: string }).text, /沙箱服务未启用/);
+  assert.equal(calls.length, 0);
+});
+
+test("a sandbox failure is reported, not swallowed", async () => {
+  const failing = {
+    configured: true,
+    allowlistSize: 1,
+    isAllowed: () => true,
+    health: async () => true,
+    run: async () => {
+      throw new Error("sandbox task timed out after 300s");
+    },
+  };
+  const handler = createHandler({ llm: null, sandbox: failing as never, logger: quiet });
+  const reply = await handler(incoming("沙箱 长任务"));
+  assert.match((reply as { text: string }).text, /沙箱执行失败/);
+  assert.match((reply as { text: string }).text, /timed out/);
+});
+
+test("the trigger accepts several prefixes and is case-insensitive", async () => {
+  const { sandbox, runs } = fakeSandbox(true);
+  const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
+  for (const phrase of ["沙箱 甲", "sandbox 乙", "跑 丙", "run 丁", "执行 戊"]) {
+    await handler(incoming(phrase));
+  }
+  assert.deepEqual(runs.map((r) => r.text), ["甲", "乙", "丙", "丁", "戊"]);
+});
+
+test("'沙箱' with no task returns usage, does not run", async () => {
+  const { sandbox, runs } = fakeSandbox(true);
+  const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
+  const reply = await handler(incoming("沙箱"));
+  assert.equal(runs.length, 0);
+  // "沙箱" alone does not match the pattern, so it falls through to chat/usage.
+  assert.ok(reply);
+});

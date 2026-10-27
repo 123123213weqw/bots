@@ -186,6 +186,57 @@ PDF 不解析是刻意的：要么引入一个容易出安全问题的解析依�
 
 判断「分析一下」是否在请求分析文件，第一版写了 `/^(分析|总结)\b/`。**`\b` 在中文上永远不成立**——单词边界要求一侧是 `\w`，而 CJK 不属于 `\w`，所以 `分析\b` 匹配不了「分析一下」，整条追问路径静默失效。测试抓到了。现在中文分支不带 `\b`，英文分支保留（避免 `analyzed` 误触发）。
 
+## 沙箱执行（接 Rust host）
+
+一句话任务交给隔离的 Rust host 执行：
+
+```
+月光: 沙箱 在当前目录建 test.txt 写入 42，然后 cat 出来
+ bot: 完成
+
+      已完成：当前目录下的 test.txt 已写入 42，并用 cat 确认输出：
+      ```
+      42
+      ```
+```
+
+触发词：`沙箱` / `sandbox` / `跑` / `run` / `执行`，后面跟任务描述。
+
+### 两层隔离
+
+| 层 | 谁做 | 作用 |
+|---|---|---|
+| **授权** | bots（TS） | `SANDBOX_ALLOWLIST` 列出的 open_id 才能用；**空列表＝谁都不能用**，不是谁都能用 |
+| **执行** | Rust host | 每次工具调用在 bubblewrap 里：workspace 可写、宿主只读、`NetworkAccess::Deny` 断网 |
+
+另有服务间鉴权：Rust 侧 `XH_FS_TASK_SECRET` 与 TS 侧 `SANDBOX_SECRET` 必须一致，否则 `/tasks` 返回 401。这样即使 3082 端口被本机其他用户访问到，没有 secret 也提交不了任务。
+
+### 配置
+
+Rust 侧（systemd unit）：
+
+```
+XH_FS_BIND=127.0.0.1:3082
+XH_FS_STATE_DIR=%h/fs-state
+XH_FS_API_KEY=<模型 key>
+XH_FS_TASK_SECRET=<与下面一致>
+```
+
+bots 侧（`.env`）：
+
+```
+SANDBOX_BASE_URL=http://127.0.0.1:3082
+SANDBOX_ALLOWLIST=ou_xxx,ou_yyy     # 逗号分隔；留空则禁用
+SANDBOX_SECRET=<与上面一致>
+SANDBOX_TIMEOUT_MS=300000           # 单个任务上限
+```
+
+### 已知的残余风险
+
+沙箱把**写入**限制在 workspace、**网络**断开，但 bwrap 用 `--ro-bind / /` 挂载，所以 agent 仍能**读**宿主的只读内容——包括 `~/bots/.env` 里的飞书 Secret、模型 key、GitHub token。
+
+也就是说：**被白名单放行的人，可以命令 agent 把密钥读出来发回聊天。** 目前只放行了可信账号，风险由授权层兜住。要彻底消除，需要把沙箱挂载收紧到只暴露 workspace（改 Rust 侧），代价是 agent 看不到其他项目。
+
 ## 对话状态机
 
 `src/machine.ts` 是一个约 200 行的显式状态机，`src/flows.ts` 放具体流程。
@@ -383,6 +434,7 @@ src/
   handler.ts   业务逻辑：命令 + 模型调用 + 上下文（可注入假模型测试）
   history.ts   每会话短上下文，有上限
   files.ts     入站文件：文件名净化、大小/类型校验、文本统计
+  runtime.ts   沙箱客户端（白名单 + 提交轮询 + 超时）
   machine.ts   对话状态机（TTL / 取消 / 槽位）
   flows.ts     具体流程（查仓库）+ RepoFetcher 接口
   github.ts    GitHub 仓库查询（404 与网络失败分开）
@@ -390,7 +442,7 @@ src/
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，130 个用例，全部离线
+tests/         node:test，147 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
@@ -402,7 +454,7 @@ assets/        示例图片
 
 | job | 做什么 | 为什么 |
 |---|---|---|
-| `test (22|24)` | 类型检查 + 130 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
+| `test (22|24)` | 类型检查 + 147 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
 | `no-secrets` | 扫已跟踪文件和**全部 git 历史**里的 key 形态 | 密钥进了公开分支，后续 commit 是撤不回来的 |
 | `smoke-node20` | 用 Node 20 逐个 import 编译产物 | 生产机上 Node 20 还跑着别的服务，产物必须仍能被它加载 |
 
@@ -414,7 +466,7 @@ assets/        示例图片
 ## 开发
 
 ```bash
-npm test          # node --test，130 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，147 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```

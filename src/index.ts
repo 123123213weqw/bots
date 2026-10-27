@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { Bot } from "./bot.ts";
 import { FeishuMessenger } from "./feishu.ts";
 import { createHandler } from "./handler.ts";
+import { runtimeFromEnv } from "./runtime.ts";
 import { GitHubRepos } from "./github.ts";
 import { deepSeekFromEnv } from "./llm.ts";
 import { Dialogue } from "./machine.ts";
@@ -40,9 +41,17 @@ async function main(): Promise<void> {
     token: process.env.GITHUB_TOKEN,
   })));
 
+  const sandbox = runtimeFromEnv();
+  if (sandbox) {
+    console.info(
+      `sandbox: ${sandbox.configured ? "enabled" : "configured but inert"} allowlist=${sandbox.allowlistSize}`,
+    );
+  }
+
   const handler = createHandler({
     llm,
     dialogue,
+    sandbox,
     downloadFile: (messageId, fileKey) =>
       messenger.downloadMessageFile(messageId, fileKey),
     imagePath: SAMPLE_IMAGE,
