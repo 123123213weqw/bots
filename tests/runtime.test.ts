@@ -165,7 +165,7 @@ test("a task that never finishes times out instead of hanging forever", async ()
   });
   await assert.rejects(
     () => withFetch(impl, () => runtime.run({ chatId: "c", messageId: "m", text: "t" })),
-    /timed out/,
+    /已中止并重置会话/,
   );
 });
 
@@ -211,4 +211,24 @@ test("resets are per chat", () => {
   runtime.reset("oc_a");
   assert.equal(runtime.workspaceFor("oc_a"), "oc_a-g1");
   assert.equal(runtime.workspaceFor("oc_b"), "oc_b");
+});
+
+test("a timeout resets the chat so the next message does not queue behind it", async () => {
+  const { impl } = fakeFetch([
+    { status: 202, body: { sessionId: "slow" } },
+    { status: 200, body: { status: "unknown" } },
+  ]);
+  const runtime = new SandboxRuntime({
+    baseUrl: "http://127.0.0.1:3082",
+    allowlist: ["ou_me"],
+    pollIntervalMs: 1,
+    timeoutMs: 30,
+  });
+  assert.equal(runtime.workspaceFor("oc_t"), "oc_t");
+  await assert.rejects(
+    () => withFetch(impl, () => runtime.run({ chatId: "oc_t", messageId: "m", text: "t" })),
+    /已中止并重置会话/,
+  );
+  // host 里那个 turn 还在跑，必须换 session 才能让下一条消息跑起来。
+  assert.equal(runtime.workspaceFor("oc_t"), "oc_t-g1");
 });

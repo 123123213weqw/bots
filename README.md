@@ -256,6 +256,29 @@ SANDBOX_SECRET=<与上面一致>
 SANDBOX_TIMEOUT_MS=300000           # 单个任务上限
 ```
 
+### system prompt
+
+沙箱内**曾经根本没有 system prompt**（实测 `systemTokens: 0`）：角色设定被拼进了
+user message，模型不知道自己工作在沙箱里，也不知道哪些路径不可见。
+
+现在通过 `request.prompt`（真 system role）下发，分三段：
+
+| section | 内容 |
+|---|---|
+| `sandbox/behaviour` | 只报告真实输出、失败就说失败、不编造退出码 |
+| `sandbox/environment` | 工作目录可写、宿主只读、部分目录被屏蔽、**没有网络**、默认不做全盘扫描 |
+| `caller/instructions` | 调用方的角色设定，拼在最后以便覆盖默认措辞 |
+
+实测修复后 `systemTokens: 0 → 1373`。效果是直接的：要求它「穷尽式搜索所有密钥」
+时，它先说明这些资源在沙箱中不可见，然后**拒绝**执行并建议改用 gitleaks 之类的
+工具，而不是像之前那样连续跑 5 轮 120–180 秒的 grep。
+
+### 超时止损
+
+默认 90 秒（`SANDBOX_TIMEOUT_MS`）。跑偏的任务实测能把会话占住 4 分钟以上，
+所以超时后会**主动换会话**（generation +1）——host 里那个 turn 还在跑，继续用
+同一 session 会让下一条消息排队，甚至读到上一轮的结果。
+
 ### 已知的残余风险
 
 沙箱把**写入**限制在 workspace、**网络**断开，但 bwrap 用 `--ro-bind / /` 挂载，所以 agent 仍能**读**宿主的只读内容——包括 `~/bots/.env` 里的飞书 Secret、模型 key、GitHub token。
@@ -467,7 +490,7 @@ src/
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，151 个用例，全部离线
+tests/         node:test，153 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
@@ -491,7 +514,7 @@ assets/        示例图片
 ## 开发
 
 ```bash
-npm test          # node --test，151 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，153 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```

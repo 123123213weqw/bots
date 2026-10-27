@@ -471,3 +471,24 @@ test("reset clears the host session too, not just local history", async () => {
   await handler(incoming("重置"));
   assert.equal(resets, 1, "不清 host 会话的话，'清空'就是假动作");
 });
+
+test("the caller's role instructions are forwarded, not dropped", async () => {
+  const captured: Array<{ systemPrompt?: string }> = [];
+  const sandbox = {
+    configured: true,
+    allowlistSize: 1,
+    isAllowed: () => true,
+    reset: () => {},
+    health: async () => true,
+    run: async (o: { systemPrompt?: string }) => {
+      captured.push(o);
+      return { status: "done", finalText: "ok" };
+    },
+  };
+  const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
+  await handler(incoming("做点什么"));
+  // 之前角色设定被拼进 user message；现在必须作为 systemPrompt 单独下发，
+  // 否则 Rust 侧会退回默认、且 systemTokens 为 0。
+  assert.ok(captured[0]?.systemPrompt, "systemPrompt 不应为空");
+  assert.match(captured[0]!.systemPrompt!, /飞书/);
+});

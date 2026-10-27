@@ -42,7 +42,14 @@ export class RuntimeError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * 单个任务的上限。
+ *
+ * 实测：一条"帮我找找密钥"会让模型连续跑 5 轮 120–180 秒的 grep，把会话占住
+ * 四分钟以上。90 秒足够正常任务（建文件、跑测试、读代码），又能在跑偏时
+ * 及时止损。要跑长时间构建就调 SANDBOX_TIMEOUT_MS。
+ */
+const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_POLL_MS = 1_500;
 
 export class SandboxRuntime {
@@ -179,8 +186,11 @@ export class SandboxRuntime {
       if (result.status !== "unknown") return result;
       await new Promise((resolve) => setTimeout(resolve, this.#config.pollIntervalMs));
     }
+    // 超时后必须换会话：host 里那个 turn 仍在跑，继续用同一个 session 会
+    // 让下一条消息排队，甚至读到上一轮的结果。
+    this.reset(options.chatId);
     throw new RuntimeError(
-      `sandbox task timed out after ${Math.round(this.#config.timeoutMs / 1000)}s`,
+      `任务超过 ${Math.round(this.#config.timeoutMs / 1000)} 秒未完成，已中止并重置会话`,
     );
   }
 }
