@@ -13,6 +13,10 @@ export interface Incoming {
   msgType: string;
   /** Text with @-mention placeholders removed; empty for non-text messages. */
   text: string;
+  /** Resource key for `image` and `file` messages; fetched separately. */
+  fileKey?: string;
+  /** Original name for `file` messages, unsanitised. */
+  fileName?: string;
   openId?: string;
   raw: unknown;
 }
@@ -40,19 +44,37 @@ export interface RawEvent {
 export function toIncoming(event: RawEvent): Incoming {
   const message = event.message;
   let text = "";
+  let fileKey: string | undefined;
+  let fileName: string | undefined;
+
   if (message.message_type === "text") {
     try {
       text = stripMentions(String(JSON.parse(message.content).text ?? ""));
     } catch {
       text = "";
     }
+  } else {
+    // image -> {"image_key":...}   file -> {"file_key":..., "file_name":...}
+    // media/video carry a file_key too. Parse defensively: a malformed body must
+    // not throw in the event handler, which would drop the message entirely.
+    try {
+      const body = JSON.parse(message.content) as Record<string, unknown>;
+      const key = body["file_key"] ?? body["image_key"];
+      if (typeof key === "string" && key) fileKey = key;
+      if (typeof body["file_name"] === "string") fileName = body["file_name"];
+    } catch {
+      /* leave undefined */
+    }
   }
+
   return {
     messageId: message.message_id,
     chatId: message.chat_id,
     chatType: message.chat_type ?? "",
     msgType: message.message_type,
     text,
+    fileKey,
+    fileName,
     openId: event.sender?.sender_id?.open_id,
     raw: message,
   };

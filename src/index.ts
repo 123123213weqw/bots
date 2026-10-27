@@ -43,6 +43,8 @@ async function main(): Promise<void> {
   const handler = createHandler({
     llm,
     dialogue,
+    downloadFile: (messageId, fileKey) =>
+      messenger.downloadMessageFile(messageId, fileKey),
     imagePath: SAMPLE_IMAGE,
     systemPrompt: process.env.BOT_SYSTEM_PROMPT?.trim() || undefined,
     secret: process.env.DEEPSEEK_API_KEY ?? "",

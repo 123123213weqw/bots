@@ -22,6 +22,8 @@ import { LruCache, chunk } from "./util.ts";
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_BYTES = 30 * 1024 * 1024;
 export const MAX_TEXT_CHARS = 4000;
+/** Refuse to buffer more than this from a single inbound resource. */
+const MAX_DOWNLOAD_BYTES = 30 * 1024 * 1024;
 
 export const IMAGE_EXTENSIONS = [
   ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".ico", ".tiff", ".tif", ".heic",
@@ -96,6 +98,8 @@ export interface Messenger {
   replyImage(messageId: string, source: MediaSource, dedupeKey?: string): Promise<string>;
   uploadImage(source: MediaSource): Promise<string>;
   downloadMessageImage(messageId: string, fileKey: string): Promise<Buffer>;
+  /** Same endpoint, `type=file`; a chat upload is fetched by key, not by URL. */
+  downloadMessageFile(messageId: string, fileKey: string): Promise<Buffer>;
 }
 
 interface RawResponse {
@@ -225,16 +229,44 @@ export class FeishuMessenger implements Messenger {
   }
 
   // ---- inbound media -----------------------------------------------------
-  /** Files the user sent are fetched by message_id + file_key, not by URL. */
-  async downloadMessageImage(messageId: string, fileKey: string): Promise<Buffer> {
+  /**
+   * Files the user sent are fetched by message_id + file_key, not by URL.
+   *
+   * `type` is not optional in practice: image and file are separate resource
+   * namespaces, and passing the wrong one returns a permission-shaped error.
+   */
+  async #download(
+    kind: "image" | "file",
+    messageId: string,
+    fileKey: string,
+  ): Promise<Buffer> {
     const res = await this.#sdk.im.v1.messageResource.get({
-      params: { type: "image" },
+      params: { type: kind },
       path: { message_id: messageId, file_key: fileKey },
     });
     const stream = res.getReadableStream() as NodeJS.ReadableStream;
     const chunks: Buffer[] = [];
-    for await (const part of stream) chunks.push(Buffer.from(part as Uint8Array));
+    let total = 0;
+    for await (const part of stream) {
+      const chunk = Buffer.from(part as Uint8Array);
+      total += chunk.byteLength;
+      // Stop early instead of buffering an enormous upload into memory.
+      if (total > MAX_DOWNLOAD_BYTES) {
+        throw new FeishuError(
+          `resource exceeds ${MAX_DOWNLOAD_BYTES / 1048576} MB while downloading`,
+        );
+      }
+      chunks.push(chunk);
+    }
     return Buffer.concat(chunks);
+  }
+
+  async downloadMessageImage(messageId: string, fileKey: string): Promise<Buffer> {
+    return this.#download("image", messageId, fileKey);
+  }
+
+  async downloadMessageFile(messageId: string, fileKey: string): Promise<Buffer> {
+    return this.#download("file", messageId, fileKey);
   }
 }
 

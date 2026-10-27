@@ -204,3 +204,163 @@ test("without a dialogue the handler behaves exactly as before", async () => {
   const handler = createHandler({ llm, logger: quiet });
   assert.deepEqual(await handler(incoming("开始")), { kind: "text", text: "模型回答" });
 });
+
+// ---- inbound files ----------------------------------------------------------
+
+function fileIncoming(name: string, chatId = "oc_1"): Incoming {
+  return {
+    messageId: "om_file",
+    chatId,
+    chatType: "p2p",
+    msgType: "file",
+    text: "",
+    fileKey: "file_v3_abc",
+    fileName: name,
+    openId: "ou_1",
+    raw: {},
+  };
+}
+
+test("a text file is summarised without calling the model", async () => {
+  const { llm, calls } = fakeLlm("不该被用到");
+  const csv = Buffer.from("name,age\nx,1\ny,2\n");
+  const handler = createHandler({
+    llm,
+    logger: quiet,
+    downloadFile: async () => csv,
+  });
+
+  const reply = await handler(fileIncoming("people.csv"));
+  const text = (reply as { text: string }).text;
+
+  assert.match(text, /people\.csv/);
+  assert.match(text, /2 列（逗号分隔）/);
+  assert.equal(calls.length, 0, "counting rows must not cost a model call");
+});
+
+test("the uploaded name is sanitised before it reaches the user", async () => {
+  const handler = createHandler({
+    llm: null,
+    logger: quiet,
+    downloadFile: async () => Buffer.from("x"),
+  });
+  const reply = await handler(fileIncoming("../../etc/secret.txt"));
+  const text = (reply as { text: string }).text;
+
+  assert.doesNotMatch(text, /\.\.\//);
+  assert.match(text, /secret\.txt/);
+});
+
+test("an oversized file is rejected before decoding", async () => {
+  const handler = createHandler({
+    llm: null,
+    logger: quiet,
+    downloadFile: async () => Buffer.alloc(30 * 1024 * 1024 + 1),
+  });
+  const reply = await handler(fileIncoming("huge.bin"));
+  assert.match((reply as { text: string }).text, /超过上限/);
+});
+
+test("an empty upload is refused with a reason", async () => {
+  const handler = createHandler({
+    llm: null,
+    logger: quiet,
+    downloadFile: async () => Buffer.alloc(0),
+  });
+  const reply = await handler(fileIncoming("empty.txt"));
+  assert.match((reply as { text: string }).text, /空/);
+});
+
+test("a download failure is reported, not swallowed", async () => {
+  const handler = createHandler({
+    llm: null,
+    logger: quiet,
+    downloadFile: async () => {
+      throw new Error("network down");
+    },
+  });
+  const reply = await handler(fileIncoming("a.csv"));
+  assert.match((reply as { text: string }).text, /无法处理/);
+});
+
+test("a binary disguised as .txt gets no text preview", async () => {
+  const handler = createHandler({
+    llm: null,
+    logger: quiet,
+    downloadFile: async () => Buffer.from([0x00, 0x01, 0x02, 0x03]),
+  });
+  const text = ((await handler(fileIncoming("payload.txt"))) as { text: string }).text;
+  assert.match(text, /二进制/);
+  assert.doesNotMatch(text, /字符/);
+});
+
+test("a follow-up 'analyse' uses the file that was just uploaded", async () => {
+  const { llm, calls } = fakeLlm("这是摘要");
+  const handler = createHandler({
+    llm,
+    logger: quiet,
+    downloadFile: async () => Buffer.from("第一行\n第二行\n"),
+  });
+
+  await handler(fileIncoming("notes.md"));
+  const reply = await handler(incoming("分析一下"));
+
+  assert.deepEqual(reply, { kind: "text", text: "这是摘要" });
+  assert.equal(calls.length, 1);
+  const sent = calls[0]!.map((m) => m.content).join("\n");
+  assert.match(sent, /notes\.md/, "the model must be told which file this is");
+  assert.match(sent, /第一行/, "the file content must be included");
+});
+
+test("'analyse' with no upload falls through to normal chat", async () => {
+  const { llm, calls } = fakeLlm("普通回答");
+  const handler = createHandler({ llm, logger: quiet });
+  const reply = await handler(incoming("分析一下"));
+  assert.deepEqual(reply, { kind: "text", text: "普通回答" });
+  assert.equal(calls.length, 1);
+});
+
+test("uploads are tracked per chat, not globally", async () => {
+  const { llm, calls } = fakeLlm("答");
+  const handler = createHandler({
+    llm,
+    logger: quiet,
+    downloadFile: async () => Buffer.from("secret-from-chat-A\n"),
+  });
+
+  await handler(fileIncoming("a.txt", "oc_A"));
+  await handler(incoming("分析一下", "text", "oc_B"));
+
+  const sent = calls[0]!.map((m) => m.content).join("\n");
+  assert.doesNotMatch(sent, /secret-from-chat-A/, "another chat's file must not leak");
+});
+
+test("CJK analysis verbs work without a word boundary", async () => {
+  // `\b` needs a \w neighbour and CJK is not \w, so /分析\b/ never matches
+  // "分析一下". This pins the fix.
+  const { llm } = fakeLlm("答");
+  const handler = createHandler({
+    llm,
+    logger: quiet,
+    downloadFile: async () => Buffer.from("x\n"),
+  });
+  await handler(fileIncoming("a.txt"));
+  for (const phrase of ["分析一下", "总结", "解释", "摘要", "解读"]) {
+    const r = await handler(incoming(phrase));
+    assert.deepEqual(r, { kind: "text", text: "答" }, `${phrase} should be recognised`);
+  }
+});
+
+test("a word starting with 分 is not treated as an analysis request", async () => {
+  const { llm, calls } = fakeLlm("普通回答");
+  const handler = createHandler({
+    llm,
+    logger: quiet,
+    downloadFile: async () => Buffer.from("x\n"),
+  });
+  await handler(fileIncoming("a.txt"));
+  await handler(incoming("分别看一下这两个方案"));
+  // It reached the model as *chat*, not as a file instruction.
+  const sent = calls[0]!.map((m) => m.content).join("\n");
+  assert.doesNotMatch(sent, /以下是用户上传的文件/, "should not be a file request");
+});

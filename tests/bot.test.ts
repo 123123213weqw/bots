@@ -37,6 +37,9 @@ function fakeMessenger() {
     async downloadMessageImage() {
       return Buffer.alloc(0);
     },
+    async downloadMessageFile() {
+      return Buffer.alloc(0);
+    },
   };
   return { messenger, sent };
 }
