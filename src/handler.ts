@@ -60,9 +60,6 @@ export interface HandlerOptions {
 }
 
 const SANDBOX_COMMANDS = /^(?:沙箱|sandbox|跑|run|执行)\s+([\s\S]+)$/i;
-const SANDBOX_HELP =
-  "沙箱用法：`沙箱 <任务>`，例如 `沙箱 统计 src 下有多少个 ts 文件`。\n" +
-  "任务在隔离环境里执行（workspace 可写、宿主只读、断网）。";
 
 /** The last uploaded text file per chat, so a follow-up question can use it. */
 interface PendingFile {
@@ -159,6 +156,8 @@ export function createHandler(options: HandlerOptions) {
     if (RESET_WORDS.has(command)) {
       history.clear(message.chatId);
       options.dialogue?.clear(message.chatId);
+      // host 的会话是按 chat 持久化的，不清它"清空"就是假动作。
+      options.sandbox?.reset(message.chatId);
       return { kind: "text", text: "已清空这个会话的上下文。" };
     }
 
@@ -183,34 +182,40 @@ export function createHandler(options: HandlerOptions) {
       }
     }
 
-    // Sandbox dispatch. Placed before the model and before flows: a task
-    // request must never be "answered" conversationally.
-    const sandboxMatch = (options.sandboxTrigger ?? SANDBOX_COMMANDS).exec(text);
-    if (sandboxMatch) {
-      const task = (sandboxMatch[1] ?? "").trim();
-      const sandbox = options.sandbox;
-      if (!sandbox || !sandbox.configured) {
-        return { kind: "text", text: "沙箱服务未启用。" };
+    // ---- host 优先 ----
+    //
+    // 授权用户在群里的每一句话都交给 Rust host：它持有会话历史（持久化、可
+    // 恢复），并且能自主决定调用哪些工具。TypeScript 这边不再维护一份平行的
+    // 对话记忆，避免两个"大脑"给出不一致的答案。
+    //
+    // 只有三类留在本地：上面的快命令（零延迟零 token）、上传文件的追问
+    // （正文只在 TS 内存里）、以及未授权用户的降级对话。
+    const sandbox = options.sandbox;
+    if (sandbox?.configured) {
+      // `沙箱 xxx` 仍然接受，但不再是必需的前缀。
+      const explicit = (options.sandboxTrigger ?? SANDBOX_COMMANDS).exec(text);
+      const task = (explicit?.[1] ?? text).trim();
+
+      if (sandbox.isAllowed(message.openId)) {
+        if (!task) return { kind: "text", text: "在，说点什么？" };
+        try {
+          const result = await sandbox.run({
+            chatId: message.chatId,
+            messageId: message.messageId,
+            text: task,
+            systemPrompt,
+          });
+          return { kind: "text", text: result.finalText };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "unknown";
+          logger.error(`host failed chat=${message.chatId}: ${reason}`);
+          return { kind: "text", text: `执行失败：${reason}` };
+        }
       }
-      if (!sandbox.isAllowed(message.openId)) {
-        // Deny-by-default: say so plainly, and never run the task.
-        logger.error(`sandbox denied open_id=${message.openId ?? "-"} chat=${message.chatId}`);
-        return { kind: "text", text: "你没有沙箱执行权限。" };
-      }
-      if (!task) return { kind: "text", text: SANDBOX_HELP };
-      try {
-        const result = await sandbox.run({
-          chatId: message.chatId,
-          messageId: message.messageId,
-          text: task,
-          systemPrompt,
-        });
-        const header = result.status === "done" ? "完成" : `结束（${result.status}）`;
-        return { kind: "text", text: `${header}\n\n${result.finalText}` };
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "unknown";
-        logger.error(`sandbox failed chat=${message.chatId}: ${reason}`);
-        return { kind: "text", text: `沙箱执行失败：${reason}` };
+      // 未授权：明确拒绝带工具的任务，避免静默降级让人以为命令跑过了。
+      if (explicit) {
+        logger.error(`host denied open_id=${message.openId ?? "-"} chat=${message.chatId}`);
+        return { kind: "text", text: "你没有执行权限。" };
       }
     }
 

@@ -180,3 +180,35 @@ test("a submission with no sessionId is an error", async () => {
     /text 为空/,
   );
 });
+
+test("reset bumps the generation so the host derives a new session", async () => {
+  const { impl, calls } = fakeFetch([
+    { status: 202, body: { sessionId: "s1" } },
+    { status: 200, body: { status: "done", finalText: "a" } },
+    { status: 202, body: { sessionId: "s2" } },
+    { status: 200, body: { status: "done", finalText: "b" } },
+  ]);
+  const runtime = new SandboxRuntime({
+    baseUrl: "http://127.0.0.1:3082",
+    allowlist: ["ou_me"],
+    pollIntervalMs: 1,
+  });
+
+  await withFetch(impl, () => runtime.run({ chatId: "oc_1", messageId: "m1", text: "x" }));
+  const first = calls[0]?.body as { workspace: string };
+  assert.equal(first.workspace, "oc_1", "首次用 chat_id 本身");
+
+  runtime.reset("oc_1");
+  await withFetch(impl, () => runtime.run({ chatId: "oc_1", messageId: "m2", text: "y" }));
+  const second = calls.find((c) => (c.body as { message_id?: string })?.message_id === "m2")
+    ?.body as { workspace: string };
+  assert.equal(second.workspace, "oc_1-g1", "重置后必须换 workspace 才换得了 session");
+  assert.notEqual(second.workspace, first.workspace);
+});
+
+test("resets are per chat", () => {
+  const runtime = new SandboxRuntime({ baseUrl: "http://127.0.0.1:3082", allowlist: ["ou_me"] });
+  runtime.reset("oc_a");
+  assert.equal(runtime.workspaceFor("oc_a"), "oc_a-g1");
+  assert.equal(runtime.workspaceFor("oc_b"), "oc_b");
+});

@@ -186,21 +186,46 @@ PDF 不解析是刻意的：要么引入一个容易出安全问题的解析依�
 
 判断「分析一下」是否在请求分析文件，第一版写了 `/^(分析|总结)\b/`。**`\b` 在中文上永远不成立**——单词边界要求一侧是 `\w`，而 CJK 不属于 `\w`，所以 `分析\b` 匹配不了「分析一下」，整条追问路径静默失效。测试抓到了。现在中文分支不带 `\b`，英文分支保留（避免 `analyzed` 误触发）。
 
-## 沙箱执行（接 Rust host）
+## host 优先（Rust 沙箱执行）
 
-一句话任务交给隔离的 Rust host 执行：
+授权用户在群里的**每一句话**都交给 Rust host，不需要前缀：
 
 ```
-月光: 沙箱 在当前目录建 test.txt 写入 42，然后 cat 出来
- bot: 完成
-
-      已完成：当前目录下的 test.txt 已写入 42，并用 cat 确认输出：
-      ```
-      42
-      ```
+月光: 在当前目录建 test.txt 写入 42，然后 cat 出来
+ bot: 已完成：test.txt 已写入 42，cat 确认输出 42
 ```
 
-触发词：`沙箱` / `sandbox` / `跑` / `run` / `执行`，后面跟任务描述。
+`沙箱` / `sandbox` / `跑` / `run` / `执行` 前缀仍然接受，但已经是多余的。
+
+### 为什么让 host 当主脑
+
+原来 TypeScript 自己维护一份对话历史（`History`，LRU 6 条，内存中，重启即忘），
+host 又有自己的 durable session。两个大脑会给出不一致的答案。现在：
+
+| 职责 | 归属 |
+|---|---|
+| 会话历史（权威） | **host**：append-only JSONL，持久化，崩溃可恢复 |
+| 工具决策 | **host**：自己决定调 bash / read / write |
+| 长连接、去重、授权 | TS |
+| 快命令 `ping` / `图` / `重置` | TS（实测 host 有 ~1 秒下限，这些不该付这个代价） |
+| 上传文件的追问 | TS（正文只在 TS 内存里） |
+| 未授权用户 | TS 纯对话降级，**不给工具** |
+
+### 重置是真的重置
+
+host 的会话按 chat 持久化。只清 TS 的 `History` 会让"清空"变成假动作。
+实现上给每个 chat 一个**代**计数，重置时 +1 并作为 `workspace` 传给 host ——
+host 的 session_id 由 `(chat_id, workspace)` 派生，换 workspace 就等于换会话，
+不需要 Rust 侧专门的 reset 接口。
+
+实测：
+
+```
+记住暗号是 BETA-7      → 好
+暗号是什么？            → BETA-7
+[重置]
+暗号是什么？            → 我不知道
+```
 
 ### 两层隔离
 
@@ -442,7 +467,7 @@ src/
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，147 个用例，全部离线
+tests/         node:test，151 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
@@ -454,7 +479,7 @@ assets/        示例图片
 
 | job | 做什么 | 为什么 |
 |---|---|---|
-| `test (22|24)` | 类型检查 + 147 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
+| `test (22|24)` | 类型检查 + 151 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
 | `no-secrets` | 扫已跟踪文件和**全部 git 历史**里的 key 形态 | 密钥进了公开分支，后续 commit 是撤不回来的 |
 | `smoke-node20` | 用 Node 20 逐个 import 编译产物 | 生产机上 Node 20 还跑着别的服务，产物必须仍能被它加载 |
 
@@ -466,7 +491,7 @@ assets/        示例图片
 ## 开发
 
 ```bash
-npm test          # node --test，147 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，151 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```

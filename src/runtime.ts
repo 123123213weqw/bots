@@ -47,6 +47,12 @@ const DEFAULT_POLL_MS = 1_500;
 
 export class SandboxRuntime {
   #config: Required<Omit<RuntimeConfig, "secret">> & { secret: string };
+  /**
+   * 每个 chat 的"代"。重置时 +1，并作为 workspace 名传给 host ——
+   * host 的 session_id 由 (chat_id, workspace) 派生，所以换 workspace
+   * 就等于换一个新会话，不需要 Rust 侧提供专门的 reset 接口。
+   */
+  #generation = new Map<string, number>();
 
   constructor(config: RuntimeConfig) {
     this.#config = {
@@ -73,6 +79,17 @@ export class SandboxRuntime {
 
   get allowlistSize(): number {
     return this.#config.allowlist.length;
+  }
+
+  /** 忘掉这个 chat 的会话：下一代 workspace 会拿到全新的 session。 */
+  reset(chatId: string): void {
+    this.#generation.set(chatId, (this.#generation.get(chatId) ?? 0) + 1);
+  }
+
+  /** 当前会话的 workspace 名，仅用于日志/排查。 */
+  workspaceFor(chatId: string): string {
+    const gen = this.#generation.get(chatId) ?? 0;
+    return gen === 0 ? chatId : `${chatId}-g${gen}`;
   }
 
   async #post<T>(path: string, body: unknown): Promise<T> {
@@ -143,6 +160,8 @@ export class SandboxRuntime {
       message_id: options.messageId,
       text: options.text,
       system_prompt: options.systemPrompt,
+      // 重置后递增的代会让 host 侧派生新的 session。
+      workspace: this.workspaceFor(options.chatId),
       // Unique per submission attempt, so two genuinely different messages with
       // the same id (different chat) cannot collide.
       message_tag: randomUUID().slice(0, 8),

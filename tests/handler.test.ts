@@ -384,66 +384,90 @@ function fakeSandbox(allowed: boolean) {
   };
 }
 
-test("an allowed user's task reaches the sandbox", async () => {
+test("an allowed user's plain message goes straight to the host", async () => {
   const { sandbox, runs } = fakeSandbox(true);
   const { llm, calls } = fakeLlm("不应被调用");
   const handler = createHandler({ llm, sandbox: sandbox as never, logger: quiet });
 
-  const reply = await handler(incoming("沙箱 数一下有多少个文件"));
+  // 不再需要 `沙箱` 前缀：host 是主脑。
+  const reply = await handler(incoming("数一下有多少个文件"));
   assert.match((reply as { text: string }).text, /执行结果/);
   assert.equal(runs.length, 1);
-  assert.equal(runs[0]?.text, "数一下有多少个文件", "前缀必须被剥掉");
-  assert.equal(calls.length, 0, "沙箱任务不应走模型对话");
+  assert.equal(runs[0]?.text, "数一下有多少个文件");
+  assert.equal(calls.length, 0, "有 host 时不应再走 TS 的模型对话");
 });
 
-test("an unauthorised user is refused and nothing runs", async () => {
+test("the 沙箱 prefix is still accepted but redundant", async () => {
+  const { sandbox, runs } = fakeSandbox(true);
+  const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
+  await handler(incoming("沙箱 数文件"));
+  assert.equal(runs[0]?.text, "数文件", "前缀应被剥掉");
+});
+
+test("an unauthorised user's explicit task is refused and nothing runs", async () => {
   const { sandbox, runs } = fakeSandbox(false);
-  const { llm } = fakeLlm("x");
+  const { llm } = fakeLlm("降级回答");
   const handler = createHandler({ llm, sandbox: sandbox as never, logger: quiet });
 
   const reply = await handler(incoming("沙箱 rm -rf /"));
-  assert.match((reply as { text: string }).text, /没有沙箱执行权限/);
+  assert.match((reply as { text: string }).text, /没有执行权限/);
   assert.equal(runs.length, 0, "未授权时绝不能执行");
 });
 
-test("without a sandbox the command says so instead of silently chatting", async () => {
-  const { llm, calls } = fakeLlm("模型回答");
-  const handler = createHandler({ llm, sandbox: null, logger: quiet });
-  const reply = await handler(incoming("沙箱 做点什么"));
-  assert.match((reply as { text: string }).text, /沙箱服务未启用/);
-  assert.equal(calls.length, 0);
+test("an unauthorised user's plain message falls back to chat, no tools", async () => {
+  const { sandbox, runs } = fakeSandbox(false);
+  const { llm } = fakeLlm("我是普通回答");
+  const handler = createHandler({ llm, sandbox: sandbox as never, logger: quiet });
+
+  const reply = await handler(incoming("今天天气怎么样"));
+  assert.deepEqual(reply, { kind: "text", text: "我是普通回答" });
+  assert.equal(runs.length, 0, "降级对话不得触达 host");
 });
 
-test("a sandbox failure is reported, not swallowed", async () => {
+test("without a host the bot still chats", async () => {
+  const { llm } = fakeLlm("模型回答");
+  const handler = createHandler({ llm, sandbox: null, logger: quiet });
+  const reply = await handler(incoming("随便聊聊"));
+  assert.deepEqual(reply, { kind: "text", text: "模型回答" });
+});
+
+test("a host failure is reported, not swallowed", async () => {
   const failing = {
     configured: true,
     allowlistSize: 1,
     isAllowed: () => true,
+    reset: () => {},
     health: async () => true,
     run: async () => {
-      throw new Error("sandbox task timed out after 300s");
+      throw new Error("host task timed out after 300s");
     },
   };
   const handler = createHandler({ llm: null, sandbox: failing as never, logger: quiet });
-  const reply = await handler(incoming("沙箱 长任务"));
-  assert.match((reply as { text: string }).text, /沙箱执行失败/);
+  const reply = await handler(incoming("长任务"));
+  assert.match((reply as { text: string }).text, /执行失败/);
   assert.match((reply as { text: string }).text, /timed out/);
 });
 
-test("the trigger accepts several prefixes and is case-insensitive", async () => {
+test("fast commands stay local so they cost no latency", async () => {
   const { sandbox, runs } = fakeSandbox(true);
   const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
-  for (const phrase of ["沙箱 甲", "sandbox 乙", "跑 丙", "run 丁", "执行 戊"]) {
-    await handler(incoming(phrase));
-  }
-  assert.deepEqual(runs.map((r) => r.text), ["甲", "乙", "丙", "丁", "戊"]);
+  assert.deepEqual(await handler(incoming("ping")), { kind: "text", text: "pong" });
+  assert.equal(runs.length, 0, "ping 不该付 1 秒的 host 延迟");
 });
 
-test("'沙箱' with no task returns usage, does not run", async () => {
-  const { sandbox, runs } = fakeSandbox(true);
+test("reset clears the host session too, not just local history", async () => {
+  let resets = 0;
+  const sandbox = {
+    configured: true,
+    allowlistSize: 1,
+    isAllowed: () => true,
+    health: async () => true,
+    reset: () => {
+      resets += 1;
+    },
+    run: async () => ({ status: "done", finalText: "ok" }),
+  };
   const handler = createHandler({ llm: null, sandbox: sandbox as never, logger: quiet });
-  const reply = await handler(incoming("沙箱"));
-  assert.equal(runs.length, 0);
-  // "沙箱" alone does not match the pattern, so it falls through to chat/usage.
-  assert.ok(reply);
+  await handler(incoming("重置"));
+  assert.equal(resets, 1, "不清 host 会话的话，'清空'就是假动作");
 });
