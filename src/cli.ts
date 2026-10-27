@@ -11,6 +11,7 @@ import * as lark from "@larksuiteoapi/node-sdk";
 
 import { FeishuMessenger } from "./feishu.ts";
 import { readConfig } from "./config.ts";
+import { isEntryPoint } from "./util.ts";
 
 interface Args {
   command: string;
@@ -69,7 +70,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error("failed:", error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (isEntryPoint(import.meta.url)) {
+  main().catch((error: unknown) => {
+    console.error("failed:", error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

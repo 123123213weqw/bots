@@ -13,6 +13,7 @@
  * Exit code is 0 only when every check passes, so it can gate a deploy.
  */
 import { readConfig } from "./config.ts";
+import { isEntryPoint } from "./util.ts";
 import { DeepSeek, redact } from "./llm.ts";
 
 interface Check {
@@ -122,10 +123,14 @@ async function main(): Promise<number> {
   return checks.every((c) => c.ok) ? 0 : 1;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (error: unknown) => {
-    console.error("doctor crashed:", error instanceof Error ? error.message : error);
-    process.exit(2);
-  },
-);
+// Guarded: importing this module (from a test or a smoke check) must not run
+// credential probes against the network.
+if (isEntryPoint(import.meta.url)) {
+  main().then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      console.error("doctor crashed:", error instanceof Error ? error.message : error);
+      process.exit(2);
+    },
+  );
+}

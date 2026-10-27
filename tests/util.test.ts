@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Deduper, LruCache, Queue, chunk, stripMentions } from "../src/util.ts";
+import { Deduper, LruCache, Queue, chunk, isEntryPoint, stripMentions } from "../src/util.ts";
 
 test("dedupe: first sighting wins", () => {
   const dedupe = new Deduper();
@@ -89,4 +89,28 @@ test("lru: evicts the oldest entry", () => {
   assert.equal(cache.size, 2);
   assert.equal(cache.get("b"), undefined, "b should have been evicted");
   assert.equal(cache.get("a"), 1);
+});
+
+test("isEntryPoint is false for a module that is merely imported", () => {
+  // Guards the class of bug where importing a module fires its side effects.
+  assert.equal(
+    isEntryPoint("file:///app/src/doctor.ts", "/app/src/bot.ts"),
+    false,
+  );
+});
+
+test("isEntryPoint is false when there is no argv[1]", () => {
+  assert.equal(isEntryPoint("file:///app/src/doctor.ts", undefined), false);
+});
+
+test("isEntryPoint tolerates a path that does not exist", () => {
+  assert.equal(isEntryPoint("file:///app/src/doctor.ts", "/nonexistent/x.ts"), false);
+});
+
+test("importing the CLI and doctor modules has no side effects", async () => {
+  // If either module ran main() on import, this would print usage, probe the
+  // network, or call process.exit -- all of which break a test run.
+  await import("../src/cli.ts");
+  await import("../src/doctor.ts");
+  assert.ok(true);
 });

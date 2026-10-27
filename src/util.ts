@@ -1,4 +1,6 @@
 /** Small, dependency-free building blocks. Unit-tested in tests/. */
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** Remembers recently seen ids; returns true only the first time. */
 export class Deduper {
@@ -148,5 +150,24 @@ export class LruCache<V> {
 
   get size(): number {
     return this.#map.size;
+  }
+}
+
+/**
+ * True when this module is the process entry point.
+ *
+ * Modules that start work at import time (network calls, timers, reading the
+ * environment) become untestable and surprising: importing them for a unit test
+ * fires the side effect. Guard those modules with this.
+ */
+export function isEntryPoint(
+  importMetaUrl: string,
+  argv1: string | undefined = process.argv[1],
+): boolean {
+  if (!argv1) return false;
+  try {
+    return fileURLToPath(importMetaUrl) === realpathSync(argv1);
+  } catch {
+    return false;
   }
 }

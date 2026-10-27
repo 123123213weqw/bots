@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 matches production on the V100. 22 is the oldest line that can run
+        # TypeScript sources at all.
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (sources + tests)
+        run: npx tsc -p tsconfig.test.json
+
+      - name: Test
+        # Node 22 needs the flag; 23.6+ strips types by default.
+        run: |
+          if [ "${{ matrix.node }}" = "22" ]; then
+            node --experimental-strip-types --test "tests/*.test.ts"
+          else
+            npm test
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify build output
+        # tsconfig rootDir has silently changed the output layout before, which
+        # only shows up at runtime as MODULE_NOT_FOUND. Catch it here instead.
+        run: |
+          for f in index bot feishu handler llm history util digest doctor cli; do
+            test -f "dist/$f.js" || { echo "missing dist/$f.js"; exit 1; }
+          done
+          echo "dist/ layout ok"
+
+  no-secrets:
+    name: no credentials committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan tracked files and full history
+        # A key reaching a public branch is the one mistake a later commit
+        # cannot undo. Fail the build instead of trusting review.
+        #
+        # Documentation placeholders (cli_xxxx, sk-...) must not trip this, and
+        # the matched text is never printed -- only the file that contains it.
+        run: |
+          set -euo pipefail
+          patterns='sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|cli_[a-z0-9]{16}|oc_[a-f0-9]{20,}'
+          is_placeholder() { grep -vE '^[a-z_]+[xX]{8,}$' || true; }
+
+          echo "== tracked files =="
+          hits=$(git ls-files -z | xargs -0 grep -hoE "$patterns" 2>/dev/null | is_placeholder | sort -u || true)
+          if [ -n "$hits" ]; then
+            echo "::error::credential-like string in tracked files:"
+            git ls-files -z | xargs -0 grep -lE "$patterns" 2>/dev/null | is_placeholder | head -10 || true
+            exit 1
+          fi
+
+          echo "== history =="
+          hist=$(git log -p --all 2>/dev/null | grep -hoE "$patterns" | is_placeholder | sort -u || true)
+          if [ -n "$hist" ]; then
+            echo "::error::credential-like string in git history ($(echo "$hist" | wc -l) distinct)"
+            exit 1
+          fi
+
+          echo clean
+
+  smoke-node20:
+    name: compiled output loads on node 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+      - name: Every emitted module imports cleanly
+        # node 20 still hosts other services on the production box, so the
+        # emitted JS must stay loadable there even though only 24 runs the bot.
+        run: |
+          node --input-type=module -e '
+            for (const m of ["util","config","llm","history","handler","feishu","bot","digest","doctor","cli"]) {
+              await import(`./dist/${m}.js`);
+            }
+            console.log("all modules load on node 20");
+          '

@@ -19,12 +19,13 @@
  *   node src/digest.ts --reset-seen # forget history (for testing)
  */
 import * as lark from "@larksuiteoapi/node-sdk";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FeishuMessenger } from "./feishu.ts";
 import { loadEnv, readConfig } from "./config.ts";
+import { isEntryPoint } from "./util.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEEN_FILE = join(HERE, "..", ".state", "digest-seen.json");
@@ -382,17 +383,7 @@ process.env.TZ = process.env.TZ ?? "Asia/Shanghai";
  * a test fires real GitHub queries as a side effect -- which is both slow and a
  * rate-limit hazard.
  */
-function invokedDirectly(): boolean {
-  const entry = process.argv[1];
-  if (!entry) return false;
-  try {
-    return fileURLToPath(import.meta.url) === realpathSync(entry);
-  } catch {
-    return false;
-  }
-}
-
-if (invokedDirectly()) {
+if (isEntryPoint(import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (error: unknown) => {

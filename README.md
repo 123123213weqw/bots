@@ -1,5 +1,7 @@
 # bots
 
+![ci](https://github.com/123123213weqw/bots/actions/workflows/ci.yml/badge.svg)
+
 一个飞书 / Lark 机器人，**TypeScript**，用 **WebSocket 长连接**收发消息：不用公网 IP，不用域名，不用证书，不用内网穿透，不用自己处理加密和验签。
 
 除了文本，还有一条完整的**出站媒体管线**：上传拿到 `image_key` → 再发消息。发图片、发文件都是这个套路。
@@ -264,16 +266,31 @@ src/
   doctor.ts    凭据自检（飞书 token + 模型可用性，不打印密钥）
   cli.ts       命令行发送（cron / CI 通知）
   config.ts    .env 读取
-tests/         node:test，65 个用例，全部离线
+tests/         node:test，73 个用例，全部离线
 console/       开发者后台自动化（Python + Playwright）
 deploy/        systemd units (bot + digest timer) + deploy.sh + set-key.sh + launchd
 assets/        示例图片
 ```
 
+## CI
+
+`.github/workflows/ci.yml`，push / PR 自动跑：
+
+| job | 做什么 | 为什么 |
+|---|---|---|
+| `test (22|24)` | 类型检查 + 73 个用例 + 构建 + 校验 `dist/` 布局 | tsconfig 的 `rootDir` 曾被改错，只在运行时才炸；现在构建期就拦住 |
+| `no-secrets` | 扫已跟踪文件和**全部 git 历史**里的 key 形态 | 密钥进了公开分支，后续 commit 是撤不回来的 |
+| `smoke-node20` | 用 Node 20 逐个 import 编译产物 | 生产机上 Node 20 还跑着别的服务，产物必须仍能被它加载 |
+
+两个 job 是踩出来的产物：
+
+- **`smoke-node20` 上线第一次就抓到了真 bug**：`doctor.ts` 和 `cli.ts` 在**被 import 时就会执行** `main()`（发网络请求 / `process.exit`）。和之前 `digest.ts` 同类，但那两个我漏了。现在三个入口统一用 `util.ts` 的 `isEntryPoint()` 守卫，并有测试断言“import 无副作用”。
+- **`no-secrets` 第一版误报**：把 `.env.example` 里的占位符 `cli_xxxxxxxxxxxxxxxx` 当成真凭据。现在会排除占位符，且**只打印文件名、不打印命中内容**。
+
 ## 开发
 
 ```bash
-npm test          # node --test，65 个用例，不需要网络和凭据（Node >= 22.6）
+npm test          # node --test，73 个用例，不需要网络和凭据（Node >= 22.6）
 npm run build     # tsc 输出到 dist/（给 Node < 23.6 用）
 npx tsc -p tsconfig.test.json   # 连测试一起类型检查
 ```
